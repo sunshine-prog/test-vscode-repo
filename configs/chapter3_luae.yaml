@@ -1,0 +1,68 @@
+seed: 42
+
+paths:
+  data_root: D:/pythonProject2/dataset_real
+  output_root: D:/pythonProject2/outputs/chapter3
+
+preprocess:
+  image_size: 256
+  roi: null
+  normalize_orientation: true
+  auto_crop: true
+  clahe: true
+  gaussian_blur: true
+  median_blur: true
+  pad_mode: mean
+
+patching:
+  enabled: true
+  patch_size: 768
+  patch_stride: 640
+  max_patches_per_image: 18
+  min_patch_std: 8.0
+  cache_enabled: true
+  cache_dir: D:/pythonProject2/outputs/chapter3/patch_cache
+  metadata_cache_enabled: true
+
+augment:
+  mode: frequency
+  fft_noise_scale: 0.06
+  rotation_deg: 6.0
+  brightness_jitter: 0.08
+
+training:
+  batch_size: 12
+  epochs: 120
+  learning_rate: 0.001
+  weight_decay: 0.00001
+  early_stopping_patience: 15
+  early_stopping_min_delta: 0.00005
+  num_workers: auto
+  pin_memory: auto
+  persistent_workers: auto
+  prefetch_factor: 2
+  amp: true
+  cudnn_benchmark: true
+  device: cuda
+
+loss:
+  mse_weight: 0.7
+  ssim_weight: 0.3
+
+scoring:
+  residual_weight: 0.20
+  ssim_weight: 0.20
+  psnr_weight: 0.10
+  peak_weight: 0.50
+  peak_percentile: 99.0
+  aggregate_max_weight: 0.75
+  aggregate_quantile_weight: 0.25
+  aggregate_quantile: 0.90
+  threshold_method: percentile
+  threshold_std_factor: 2.0
+  threshold_percentile: 95.0
+  map_std_factor: 2.0
+  min_region_area: 20
+
+visualization:
+  num_examples: 6

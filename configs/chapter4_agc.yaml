@@ -1,0 +1,52 @@
+seed: 42
+
+paths:
+  chapter3_config: D:/pythonProject2/configs/chapter3_luae.yaml
+  chapter3_checkpoint: D:/pythonProject2/outputs/chapter3/checkpoints/best_model.pt
+  output_root: D:/pythonProject2/outputs/chapter4
+
+controller:
+  ema_alpha: 0.72
+  integral_limit: 3.0
+  adaptive_rate: 0.35
+  derivative_rate: 0.20
+  base_parameters:
+    flow_g_per_15s: 50.0
+    pressure_mpa: 0.32
+    spray_angle_deg: 90.0
+  limits:
+    flow_g_per_15s: [45.0, 55.0]
+    pressure_mpa: [0.24, 0.42]
+    spray_angle_deg: [60.0, 120.0]
+  command_scales:
+    flow: 30.0
+    pressure: 0.06
+    angle: 35.0
+  severity_gain:
+    normal: 0.0
+    slight: 1.0
+    medium: 1.25
+    severe: 1.60
+  severity_bias:
+    slight:
+      flow: 2.0
+      pressure: 0.005
+      angle: 6.0
+    medium:
+      flow: 3.5
+      pressure: 0.010
+      angle: 10.0
+    severe:
+      flow: 5.0
+      pressure: 0.015
+      angle: 15.0
+
+plant:
+  dt: 0.10
+  gain: 0.85
+  time_constant: 0.65
+  target_thickness: 1.0
+  disturbance_scale: 0.08
+
+simulation:
+  max_samples: null
