@@ -43,11 +43,35 @@ def ensure_dir(path: str | Path) -> Path:
     return target
 
 
-def set_seed(seed: int) -> None:
+def configure_reproducibility(seed: int, reproducibility: dict[str, Any] | None = None) -> dict[str, Any]:
+    reproducibility = reproducibility or {}
+    deterministic = bool(reproducibility.get("deterministic", False))
+    warn_only = bool(reproducibility.get("warn_only", True))
+    cublas_workspace_config = reproducibility.get("cublas_workspace_config", ":4096:8")
+
+    if deterministic and cublas_workspace_config:
+        os.environ["CUBLAS_WORKSPACE_CONFIG"] = str(cublas_workspace_config)
+
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
+
+    torch.backends.cudnn.deterministic = deterministic
+    if deterministic:
+        torch.use_deterministic_algorithms(True, warn_only=warn_only)
+    else:
+        torch.use_deterministic_algorithms(False)
+
+    return {
+        "seed": int(seed),
+        "deterministic": deterministic,
+        "warn_only": warn_only,
+    }
+
+
+def set_seed(seed: int) -> None:
+    configure_reproducibility(seed)
 
 
 def choose_device(device_name: str) -> torch.device:

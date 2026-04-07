@@ -13,7 +13,7 @@ from torch.optim import Adam
 from tqdm import tqdm
 
 from .anomaly import assign_severity, compute_batch_scores, estimate_threshold, extract_region_features
-from .config import build_scheduler, choose_device, ensure_dir, save_csv, save_json, set_seed
+from .config import build_scheduler, choose_device, configure_reproducibility, ensure_dir, save_csv, save_json
 from .data import build_dataloaders
 from .losses import MSESSIMLoss
 from .models import LightweightUNetAutoEncoder, count_parameters
@@ -161,7 +161,7 @@ def _collect_scores(
 
 
 def train_and_evaluate(config: dict[str, Any], max_test_samples: int | None = None) -> dict[str, Any]:
-    set_seed(config["seed"])
+    reproducibility_state = configure_reproducibility(config["seed"], config.get("reproducibility"))
     loaders = build_dataloaders(config, max_test_samples=max_test_samples)
 
     output_root = ensure_dir(config["paths"]["output_root"])
@@ -173,7 +173,9 @@ def train_and_evaluate(config: dict[str, Any], max_test_samples: int | None = No
     device = choose_device(training_config.get("device", "auto"))
     amp_enabled = bool(training_config.get("amp", False)) and device.type == "cuda"
     if device.type == "cuda":
-        torch.backends.cudnn.benchmark = bool(training_config.get("cudnn_benchmark", False))
+        torch.backends.cudnn.benchmark = (
+            bool(training_config.get("cudnn_benchmark", False)) and not reproducibility_state["deterministic"]
+        )
     model_config = config.get("model", {})
     base_channels = int(model_config.get("base_channels", 32))
     model = LightweightUNetAutoEncoder(base_channels=base_channels).to(device)
@@ -261,6 +263,8 @@ def train_and_evaluate(config: dict[str, Any], max_test_samples: int | None = No
         "device": str(device),
         "base_channels": base_channels,
         "scheduler_type": str(training_config.get("scheduler", {}).get("type", "cosine")),
+        "seed": int(config["seed"]),
+        "deterministic": bool(reproducibility_state["deterministic"]),
     }
 
     checkpoint_path = checkpoints_dir / "best_model.pt"

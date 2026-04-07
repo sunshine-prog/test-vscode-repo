@@ -18,7 +18,7 @@ from .anomaly import (
     estimate_threshold,
     extract_region_features,
 )
-from .config import build_scheduler, choose_device, ensure_dir, save_csv, save_json, set_seed
+from .config import build_scheduler, choose_device, configure_reproducibility, ensure_dir, save_csv, save_json
 from .data_v2 import build_dataloaders_v2
 from .losses import MSESSIMLoss
 from .models import LightweightUNetAutoEncoder, count_parameters
@@ -186,7 +186,7 @@ def _compute_calibration_auc(
 
 
 def train_and_evaluate_v2(config: dict[str, Any], max_test_samples: int | None = None) -> dict[str, Any]:
-    set_seed(config["seed"])
+    reproducibility_state = configure_reproducibility(config["seed"], config.get("reproducibility"))
     loaders = build_dataloaders_v2(config, max_test_samples=max_test_samples)
 
     output_root = ensure_dir(config["paths"]["output_root"])
@@ -198,7 +198,9 @@ def train_and_evaluate_v2(config: dict[str, Any], max_test_samples: int | None =
     device = choose_device(training_config.get("device", "auto"))
     amp_enabled = bool(training_config.get("amp", False)) and device.type == "cuda"
     if device.type == "cuda":
-        torch.backends.cudnn.benchmark = bool(training_config.get("cudnn_benchmark", False))
+        torch.backends.cudnn.benchmark = (
+            bool(training_config.get("cudnn_benchmark", False)) and not reproducibility_state["deterministic"]
+        )
     model_config = config.get("model", {})
     base_channels = int(model_config.get("base_channels", 32))
     model = LightweightUNetAutoEncoder(base_channels=base_channels).to(device)
@@ -320,6 +322,8 @@ def train_and_evaluate_v2(config: dict[str, Any], max_test_samples: int | None =
         "scheduler_type": str(training_config.get("scheduler", {}).get("type", "cosine")),
         "selection_monitor": monitor,
         "best_monitor_value": float(best_monitor_value),
+        "seed": int(config["seed"]),
+        "deterministic": bool(reproducibility_state["deterministic"]),
         "train_patch_count": len(loaders["train"].dataset),
         "val_patch_count": len(loaders["val"].dataset),
         "test_patch_count": len(loaders["test"].dataset),

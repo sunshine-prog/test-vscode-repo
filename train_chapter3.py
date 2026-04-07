@@ -21,6 +21,9 @@ def main() -> None:
         default="auto",
         help="choose the base image pipeline or the patch-aware pipeline",
     )
+    parser.add_argument("--seed", type=int, default=None, help="override the random seed")
+    parser.add_argument("--output-root", default=None, help="override the output directory")
+    parser.add_argument("--deterministic", action="store_true", help="enable deterministic training behavior")
     args = parser.parse_args()
 
     config = copy.deepcopy(load_yaml(args.config))
@@ -32,6 +35,12 @@ def main() -> None:
         config["training"]["batch_size"] = args.batch_size
     if args.device is not None:
         config["training"]["device"] = args.device
+    if args.seed is not None:
+        config["seed"] = args.seed
+    if args.output_root is not None:
+        config["paths"]["output_root"] = args.output_root
+    if args.deterministic:
+        config.setdefault("reproducibility", {})["deterministic"] = True
 
     patching_enabled = bool(config.get("patching", {}).get("enabled", False))
     use_patch_pipeline = args.pipeline == "patch" or (args.pipeline == "auto" and patching_enabled)

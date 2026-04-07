@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import random
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,6 +16,27 @@ from .config import resolve_dataloader_kwargs
 
 def _normalize_path_key(path: str | Path) -> str:
     return str(Path(path)).replace("\\", "/").lower()
+
+
+def _load_split_manifest(
+    data_root: str | Path,
+    manifest_path: str | Path | None,
+) -> dict[str, dict[str, list[tuple[Path, int, str]]]]:
+    if manifest_path is None:
+        return {}
+
+    manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+    data_root_path = Path(data_root)
+    resolved: dict[str, dict[str, list[tuple[Path, int, str]]]] = {}
+    for split, categories in manifest.get("splits", {}).items():
+        resolved[split] = {}
+        for category, relative_paths in categories.items():
+            label = 1 if category == "defect" else 0
+            resolved[split][category] = [
+                (data_root_path / Path(relative_path), label, category)
+                for relative_path in relative_paths
+            ]
+    return resolved
 
 
 @dataclass(frozen=True)
@@ -57,6 +79,7 @@ class SprayImageDatasetV2(Dataset):
         fft_noise_scale: float = 0.06,
         rotation_deg: float = 6.0,
         brightness_jitter: float = 0.08,
+        image_records: list[tuple[Path, int, str]] | None = None,
         selected_paths: set[str] | None = None,
         max_samples: int | None = None,
     ) -> None:
@@ -84,17 +107,20 @@ class SprayImageDatasetV2(Dataset):
         self.brightness_jitter = brightness_jitter
         self.selected_paths = {_normalize_path_key(path) for path in selected_paths} if selected_paths else None
 
-        categories = ["normal"] if split in {"train", "val"} else ["normal", "defect"]
-        image_paths: list[tuple[Path, int, str]] = []
-        for category in categories:
-            category_dir = self.root / split / category
-            if not category_dir.exists():
-                continue
-            label = 1 if category == "defect" else 0
-            for path in sorted(category_dir.glob("*.jpg")):
-                if self.selected_paths is not None and _normalize_path_key(path) not in self.selected_paths:
+        if image_records is not None:
+            image_paths = list(image_records)
+        else:
+            categories = ["normal"] if split in {"train", "val"} else ["normal", "defect"]
+            image_paths = []
+            for category in categories:
+                category_dir = self.root / split / category
+                if not category_dir.exists():
                     continue
-                image_paths.append((path, label, category))
+                label = 1 if category == "defect" else 0
+                for path in sorted(category_dir.glob("*.jpg")):
+                    if self.selected_paths is not None and _normalize_path_key(path) not in self.selected_paths:
+                        continue
+                    image_paths.append((path, label, category))
 
         if max_samples is not None:
             image_paths = image_paths[:max_samples]
@@ -400,6 +426,7 @@ def build_dataloaders_v2(config: dict[str, Any], max_test_samples: int | None = 
     training = config["training"]
     selection = config.get("selection", {})
     loader_kwargs = resolve_dataloader_kwargs(training)
+    manifest_records = _load_split_manifest(config["paths"]["data_root"], selection.get("split_manifest"))
 
     common = {
         "data_root": data_root,
@@ -428,6 +455,8 @@ def build_dataloaders_v2(config: dict[str, Any], max_test_samples: int | None = 
     calibration_defect_enabled = bool(calibration_defect_config.get("enabled", False))
     calibration_defect_paths: set[str] | None = None
     test_selected_paths: set[str] | None = None
+    if manifest_records:
+        calibration_defect_enabled = False
     if calibration_defect_enabled:
         normal_paths = {
             _normalize_path_key(path)
@@ -449,21 +478,35 @@ def build_dataloaders_v2(config: dict[str, Any], max_test_samples: int | None = 
         "train": SprayImageDatasetV2(
             split="train",
             augment_mode=augment.get("mode", "none"),
+            image_records=manifest_records.get("train", {}).get("normal"),
             **common,
         ),
         "val": SprayImageDatasetV2(
             split="val",
             augment_mode="none",
+            image_records=manifest_records.get("val", {}).get("normal"),
             **common,
         ),
         "test": SprayImageDatasetV2(
             split="test",
             augment_mode="none",
+            image_records=(
+                (manifest_records.get("test", {}).get("normal", []) + manifest_records.get("test", {}).get("defect", []))
+                if manifest_records else None
+            ),
             selected_paths=test_selected_paths,
             max_samples=max_test_samples,
             **common,
         ),
     }
+    val_defect_records = manifest_records.get("val", {}).get("defect", [])
+    if val_defect_records:
+        datasets["val_defect"] = SprayImageDatasetV2(
+            split="val",
+            augment_mode="none",
+            image_records=val_defect_records,
+            **common,
+        )
     if calibration_defect_paths:
         datasets["calibration_defect"] = SprayImageDatasetV2(
             split="test",
@@ -492,6 +535,12 @@ def build_dataloaders_v2(config: dict[str, Any], max_test_samples: int | None = 
     if "calibration_defect" in datasets:
         loaders["calibration_defect"] = DataLoader(
             datasets["calibration_defect"],
+            shuffle=False,
+            **loader_kwargs,
+        )
+    if "val_defect" in datasets:
+        loaders["val_defect"] = DataLoader(
+            datasets["val_defect"],
             shuffle=False,
             **loader_kwargs,
         )
