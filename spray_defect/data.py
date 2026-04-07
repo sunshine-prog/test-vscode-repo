@@ -32,6 +32,7 @@ class SprayImageDataset(Dataset):
         median_blur: bool = True,
         pad_mode: str = "mean",
         augment_mode: str = "none",
+        augment_methods: list[str] | None = None,
         fft_noise_scale: float = 0.06,
         rotation_deg: float = 6.0,
         brightness_jitter: float = 0.08,
@@ -46,6 +47,7 @@ class SprayImageDataset(Dataset):
         self.median_blur = median_blur
         self.pad_mode = pad_mode
         self.augment_mode = augment_mode
+        self.augment_methods = [str(method).strip().lower() for method in augment_methods] if augment_methods else None
         self.fft_noise_scale = fft_noise_scale
         self.rotation_deg = rotation_deg
         self.brightness_jitter = brightness_jitter
@@ -126,8 +128,22 @@ class SprayImageDataset(Dataset):
         return canvas
 
     def _augment(self, image: np.ndarray) -> np.ndarray:
+        if self.augment_methods is not None:
+            augmented = image
+            for method in self.augment_methods:
+                if method == "spatial":
+                    augmented = self._spatial_only_augment(augmented)
+                elif method == "photometric":
+                    augmented = self._photometric_augment(augmented)
+                elif method == "frequency":
+                    augmented = self._frequency_only_augment(augmented)
+                else:
+                    raise ValueError(f"Unsupported augmentation method: {method}")
+            return augmented
         if self.augment_mode == "none":
             return image
+        if self.augment_mode == "photometric":
+            return self._photometric_augment(image)
         if self.augment_mode == "spatial":
             return self._spatial_augment(image)
         if self.augment_mode == "frequency":
@@ -158,6 +174,44 @@ class SprayImageDataset(Dataset):
         augmented = np.clip(augmented.astype(np.float32) * alpha + beta, 0, 255).astype(np.uint8)
         return augmented
 
+    def _spatial_only_augment(self, image: np.ndarray) -> np.ndarray:
+        augmented = image.copy()
+        if random.random() < 0.5:
+            augmented = cv2.flip(augmented, 1)
+        if random.random() < 0.3:
+            augmented = cv2.flip(augmented, 0)
+
+        angle = random.uniform(-self.rotation_deg, self.rotation_deg)
+        scale = random.uniform(0.96, 1.04)
+        center = (self.image_size / 2.0, self.image_size / 2.0)
+        matrix = cv2.getRotationMatrix2D(center, angle, scale)
+        augmented = cv2.warpAffine(
+            augmented,
+            matrix,
+            (self.image_size, self.image_size),
+            flags=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_REFLECT_101,
+        )
+        return augmented
+
+    def _photometric_augment(self, image: np.ndarray) -> np.ndarray:
+        augmented = image.copy()
+        alpha = random.uniform(1.0 - self.brightness_jitter, 1.0 + self.brightness_jitter)
+        beta = random.uniform(-18.0, 18.0)
+        augmented = np.clip(augmented.astype(np.float32) * alpha + beta, 0, 255).astype(np.uint8)
+        return augmented
+
+    def _frequency_only_augment(self, image: np.ndarray) -> np.ndarray:
+        image_float = image.astype(np.float32) / 255.0
+        spectrum = np.fft.fft2(image_float)
+        amplitude = np.abs(spectrum)
+        phase = np.angle(spectrum)
+        noise = np.random.normal(0.0, self.fft_noise_scale, size=image_float.shape).astype(np.float32)
+        amplitude = amplitude * np.clip(1.0 + noise, 0.85, 1.15)
+        perturbed = np.fft.ifft2(amplitude * np.exp(1j * phase)).real
+        perturbed = np.clip(perturbed, 0.0, 1.0)
+        return (perturbed * 255.0).astype(np.uint8)
+
     def _frequency_augment(self, image: np.ndarray) -> np.ndarray:
         augmented = self._spatial_augment(image)
         image_float = augmented.astype(np.float32) / 255.0
@@ -186,6 +240,7 @@ def build_dataloaders(config: dict[str, Any], max_test_samples: int | None = Non
         "gaussian_blur": preprocess.get("gaussian_blur", True),
         "median_blur": preprocess.get("median_blur", True),
         "pad_mode": preprocess.get("pad_mode", "mean"),
+        "augment_methods": augment.get("methods"),
         "fft_noise_scale": augment.get("fft_noise_scale", 0.06),
         "rotation_deg": augment.get("rotation_deg", 6.0),
         "brightness_jitter": augment.get("brightness_jitter", 0.08),

@@ -158,6 +158,9 @@ def aggregate_patch_rows(rows: list[dict[str, Any]], scoring_config: dict[str, A
     max_weight = float(scoring_config.get("aggregate_max_weight", 1.0))
     quantile_weight = float(scoring_config.get("aggregate_quantile_weight", 0.0))
     aggregate_quantile = float(scoring_config.get("aggregate_quantile", 0.9))
+    region_defect_weight = float(scoring_config.get("region_defect_weight", 0.0))
+    region_bbox_width_weight = float(scoring_config.get("region_bbox_width_weight", 0.0))
+    region_bbox_area_weight = float(scoring_config.get("region_bbox_area_weight", 0.0))
 
     for group_rows in grouped.values():
         scores = np.array([float(row["anomaly_score"]) for row in group_rows], dtype=np.float32)
@@ -183,6 +186,22 @@ def aggregate_patch_rows(rows: list[dict[str, Any]], scoring_config: dict[str, A
         aggregated["bbox_y"] = int(patch_y + int(top_row["bbox_y"]) * patch_h / image_size)
         aggregated["bbox_w"] = int(int(top_row["bbox_w"]) * patch_w / image_size)
         aggregated["bbox_h"] = int(int(top_row["bbox_h"]) * patch_h / image_size)
+
+        bbox_width_ratio = float(aggregated["bbox_w"]) / base_width
+        bbox_height_ratio = float(aggregated["bbox_h"]) / base_height
+        bbox_area_ratio = bbox_width_ratio * bbox_height_ratio
+        region_score = (
+            region_defect_weight * float(aggregated["defect_ratio"])
+            + region_bbox_width_weight * bbox_width_ratio
+            + region_bbox_area_weight * bbox_area_ratio
+        )
+
+        aggregated["base_anomaly_score"] = aggregate_score
+        aggregated["bbox_width_ratio"] = bbox_width_ratio
+        aggregated["bbox_height_ratio"] = bbox_height_ratio
+        aggregated["bbox_area_ratio"] = bbox_area_ratio
+        aggregated["region_score"] = region_score
+        aggregated["anomaly_score"] = aggregate_score + region_score
 
         aggregated_rows.append(aggregated)
 

@@ -10,6 +10,7 @@ from typing import Any
 import numpy as np
 import torch
 import yaml
+from torch.optim.lr_scheduler import CosineAnnealingLR, StepLR
 
 
 def load_yaml(path: str | Path) -> dict[str, Any]:
@@ -123,3 +124,25 @@ def resolve_dataloader_kwargs(training: dict[str, Any]) -> dict[str, Any]:
                 loader_kwargs["prefetch_factor"] = int(prefetch_factor)
 
     return loader_kwargs
+
+
+def build_scheduler(
+    optimizer: torch.optim.Optimizer,
+    training: dict[str, Any],
+    epochs: int,
+) -> torch.optim.lr_scheduler._LRScheduler | None:
+    scheduler_config = training.get("scheduler", {})
+    scheduler_type = str(scheduler_config.get("type", "cosine")).strip().lower()
+
+    if scheduler_type == "none":
+        return None
+    if scheduler_type == "cosine":
+        min_lr_ratio = float(scheduler_config.get("min_lr_ratio", 0.01))
+        eta_min = float(training["learning_rate"]) * min_lr_ratio
+        return CosineAnnealingLR(optimizer, T_max=max(int(epochs), 1), eta_min=eta_min)
+    if scheduler_type == "step":
+        step_size = int(scheduler_config.get("step_size", max(1, int(epochs) // 2)))
+        gamma = float(scheduler_config.get("gamma", 0.5))
+        return StepLR(optimizer, step_size=max(step_size, 1), gamma=gamma)
+
+    raise ValueError(f"Unsupported training.scheduler.type: {scheduler_type!r}")

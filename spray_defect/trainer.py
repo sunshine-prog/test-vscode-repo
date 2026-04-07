@@ -8,12 +8,12 @@ from typing import Any
 import numpy as np
 import torch
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score, roc_auc_score
+from torch import amp
 from torch.optim import Adam
-from torch.optim.lr_scheduler import CosineAnnealingLR
 from tqdm import tqdm
 
 from .anomaly import assign_severity, compute_batch_scores, estimate_threshold, extract_region_features
-from .config import choose_device, ensure_dir, save_csv, save_json, set_seed
+from .config import build_scheduler, choose_device, ensure_dir, save_csv, save_json, set_seed
 from .data import build_dataloaders
 from .losses import MSESSIMLoss
 from .models import LightweightUNetAutoEncoder, count_parameters
@@ -31,9 +31,11 @@ def _run_epoch(
     criterion: MSESSIMLoss,
     optimizer: torch.optim.Optimizer | None,
     device: torch.device,
+    amp_enabled: bool,
 ) -> tuple[float, float, float]:
     is_train = optimizer is not None
     model.train(is_train)
+    scaler = amp.GradScaler(device.type, enabled=amp_enabled and is_train)
 
     total_loss = 0.0
     total_mse = 0.0
@@ -46,12 +48,18 @@ def _run_epoch(
         if is_train:
             optimizer.zero_grad(set_to_none=True)
 
-        reconstructions = model(images)
-        loss, parts = criterion(reconstructions, images)
+        with amp.autocast(device_type=device.type, enabled=amp_enabled):
+            reconstructions = model(images)
+            loss, parts = criterion(reconstructions, images)
 
         if is_train:
-            loss.backward()
-            optimizer.step()
+            if amp_enabled:
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                loss.backward()
+                optimizer.step()
 
         batch_size = images.size(0)
         total_loss += float(loss.detach().cpu().item()) * batch_size
@@ -161,29 +169,39 @@ def train_and_evaluate(config: dict[str, Any], max_test_samples: int | None = No
     figures_dir = ensure_dir(output_root / "figures")
     metrics_dir = ensure_dir(output_root / "metrics")
 
-    device = choose_device(config["training"].get("device", "auto"))
-    model = LightweightUNetAutoEncoder().to(device)
+    training_config = config["training"]
+    device = choose_device(training_config.get("device", "auto"))
+    amp_enabled = bool(training_config.get("amp", False)) and device.type == "cuda"
+    if device.type == "cuda":
+        torch.backends.cudnn.benchmark = bool(training_config.get("cudnn_benchmark", False))
+    model_config = config.get("model", {})
+    base_channels = int(model_config.get("base_channels", 32))
+    model = LightweightUNetAutoEncoder(base_channels=base_channels).to(device)
     criterion = MSESSIMLoss(
         mse_weight=config["loss"]["mse_weight"],
         ssim_weight=config["loss"]["ssim_weight"],
     )
     optimizer = Adam(
         model.parameters(),
-        lr=config["training"]["learning_rate"],
-        weight_decay=config["training"]["weight_decay"],
+        lr=training_config["learning_rate"],
+        weight_decay=training_config["weight_decay"],
     )
-    scheduler = CosineAnnealingLR(optimizer, T_max=config["training"]["epochs"])
+    scheduler = build_scheduler(optimizer, training_config, epochs=training_config["epochs"])
 
     history = {"train_loss": [], "val_loss": [], "train_mse": [], "val_mse": [], "train_ssim": [], "val_ssim": []}
     best_state: dict[str, Any] | None = None
     best_val_loss = float("inf")
     early_stop_counter = 0
-    patience = config["training"].get("early_stopping_patience", 15)
+    patience = int(training_config.get("early_stopping_patience", 15))
+    min_delta = float(training_config.get("early_stopping_min_delta", 0.0))
 
-    for epoch in range(1, config["training"]["epochs"] + 1):
-        train_loss, train_mse, train_ssim = _run_epoch(model, loaders["train"], criterion, optimizer, device)
-        val_loss, val_mse, val_ssim = _run_epoch(model, loaders["val"], criterion, None, device)
-        scheduler.step()
+    for epoch in range(1, training_config["epochs"] + 1):
+        train_loss, train_mse, train_ssim = _run_epoch(
+            model, loaders["train"], criterion, optimizer, device, amp_enabled
+        )
+        val_loss, val_mse, val_ssim = _run_epoch(model, loaders["val"], criterion, None, device, amp_enabled)
+        if scheduler is not None:
+            scheduler.step()
 
         history["train_loss"].append(train_loss)
         history["val_loss"].append(val_loss)
@@ -198,7 +216,7 @@ def train_and_evaluate(config: dict[str, Any], max_test_samples: int | None = No
             f"train_ssim={train_ssim:.4f} | val_ssim={val_ssim:.4f}"
         )
 
-        if val_loss < best_val_loss:
+        if val_loss < best_val_loss - min_delta:
             best_val_loss = val_loss
             best_state = copy.deepcopy(model.state_dict())
             early_stop_counter = 0
@@ -241,6 +259,8 @@ def train_and_evaluate(config: dict[str, Any], max_test_samples: int | None = No
         "avg_inference_latency_ms": float(avg_latency_ms),
         "parameter_count": int(count_parameters(model)),
         "device": str(device),
+        "base_channels": base_channels,
+        "scheduler_type": str(training_config.get("scheduler", {}).get("type", "cosine")),
     }
 
     checkpoint_path = checkpoints_dir / "best_model.pt"

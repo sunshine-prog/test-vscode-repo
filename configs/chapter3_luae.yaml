@@ -1,5 +1,8 @@
 seed: 42
 
+model:
+  base_channels: 32
+
 paths:
   data_root: D:/pythonProject2/dataset_real
   output_root: D:/pythonProject2/outputs/chapter3
@@ -25,7 +28,10 @@ patching:
   metadata_cache_enabled: true
 
 augment:
-  mode: frequency
+  mode: spatial
+  methods:
+    - spatial
+    - photometric
   fft_noise_scale: 0.06
   rotation_deg: 6.0
   brightness_jitter: 0.08
@@ -33,7 +39,7 @@ augment:
 training:
   batch_size: 12
   epochs: 120
-  learning_rate: 0.001
+  learning_rate: 0.0005
   weight_decay: 0.00001
   early_stopping_patience: 15
   early_stopping_min_delta: 0.00005
@@ -44,6 +50,16 @@ training:
   amp: true
   cudnn_benchmark: true
   device: cuda
+  scheduler:
+    type: cosine
+    min_lr_ratio: 0.01
+
+selection:
+  monitor: calibration_auc
+  calibration_defect:
+    enabled: true
+    defect_count: 20
+    seed: 42
 
 loss:
   mse_weight: 0.7
@@ -58,6 +74,9 @@ scoring:
   aggregate_max_weight: 0.75
   aggregate_quantile_weight: 0.25
   aggregate_quantile: 0.90
+  region_defect_weight: 3.0
+  region_bbox_width_weight: 1.5
+  region_bbox_area_weight: 0.0
   threshold_method: percentile
   threshold_std_factor: 2.0
   threshold_percentile: 95.0

@@ -5,6 +5,7 @@ import copy
 
 from spray_defect.config import load_yaml
 from spray_defect.trainer import train_and_evaluate
+from spray_defect.trainer_v2 import train_and_evaluate_v2
 
 
 def main() -> None:
@@ -14,9 +15,16 @@ def main() -> None:
     parser.add_argument("--batch-size", type=int, default=None, help="覆盖批量大小")
     parser.add_argument("--device", default=None, help="覆盖训练设备，如 cpu / cuda / auto")
     parser.add_argument("--max-test-samples", type=int, default=None, help="只取部分测试样本做快速验证")
+    parser.add_argument(
+        "--pipeline",
+        choices=("auto", "base", "patch"),
+        default="auto",
+        help="choose the base image pipeline or the patch-aware pipeline",
+    )
     args = parser.parse_args()
 
     config = copy.deepcopy(load_yaml(args.config))
+
 
     if args.epochs is not None:
         config["training"]["epochs"] = args.epochs
@@ -25,8 +33,13 @@ def main() -> None:
     if args.device is not None:
         config["training"]["device"] = args.device
 
-    result = train_and_evaluate(config, max_test_samples=args.max_test_samples)
+    patching_enabled = bool(config.get("patching", {}).get("enabled", False))
+    use_patch_pipeline = args.pipeline == "patch" or (args.pipeline == "auto" and patching_enabled)
+    train_fn = train_and_evaluate_v2 if use_patch_pipeline else train_and_evaluate
+
+    result = train_fn(config, max_test_samples=args.max_test_samples)
     metrics = result["metrics"]
+    print(f"Pipeline: {'patch' if use_patch_pipeline else 'base'}")
 
     print("\n第三章训练完成。")
     print(f"模型权重: {result['checkpoint_path']}")

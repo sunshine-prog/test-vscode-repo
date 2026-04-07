@@ -13,6 +13,10 @@ from torch.utils.data import DataLoader, Dataset
 from .config import resolve_dataloader_kwargs
 
 
+def _normalize_path_key(path: str | Path) -> str:
+    return str(Path(path)).replace("\\", "/").lower()
+
+
 @dataclass(frozen=True)
 class SampleRecord:
     path: Path
@@ -49,9 +53,11 @@ class SprayImageDatasetV2(Dataset):
         cache_enabled: bool = False,
         cache_dir: str | Path | None = None,
         augment_mode: str = "none",
+        augment_methods: list[str] | None = None,
         fft_noise_scale: float = 0.06,
         rotation_deg: float = 6.0,
         brightness_jitter: float = 0.08,
+        selected_paths: set[str] | None = None,
         max_samples: int | None = None,
     ) -> None:
         self.root = Path(data_root)
@@ -72,9 +78,11 @@ class SprayImageDatasetV2(Dataset):
         self.cache_enabled = cache_enabled
         self.cache_dir = Path(cache_dir) if cache_dir is not None else None
         self.augment_mode = augment_mode
+        self.augment_methods = [str(method).strip().lower() for method in augment_methods] if augment_methods else None
         self.fft_noise_scale = fft_noise_scale
         self.rotation_deg = rotation_deg
         self.brightness_jitter = brightness_jitter
+        self.selected_paths = {_normalize_path_key(path) for path in selected_paths} if selected_paths else None
 
         categories = ["normal"] if split in {"train", "val"} else ["normal", "defect"]
         image_paths: list[tuple[Path, int, str]] = []
@@ -84,6 +92,8 @@ class SprayImageDatasetV2(Dataset):
                 continue
             label = 1 if category == "defect" else 0
             for path in sorted(category_dir.glob("*.jpg")):
+                if self.selected_paths is not None and _normalize_path_key(path) not in self.selected_paths:
+                    continue
                 image_paths.append((path, label, category))
 
         if max_samples is not None:
@@ -269,8 +279,22 @@ class SprayImageDatasetV2(Dataset):
         return canvas
 
     def _augment(self, image: np.ndarray) -> np.ndarray:
+        if self.augment_methods is not None:
+            augmented = image
+            for method in self.augment_methods:
+                if method == "spatial":
+                    augmented = self._spatial_only_augment(augmented)
+                elif method == "photometric":
+                    augmented = self._photometric_augment(augmented)
+                elif method == "frequency":
+                    augmented = self._frequency_only_augment(augmented)
+                else:
+                    raise ValueError(f"Unsupported augmentation method: {method}")
+            return augmented
         if self.augment_mode == "none":
             return image
+        if self.augment_mode == "photometric":
+            return self._photometric_augment(image)
         if self.augment_mode == "spatial":
             return self._spatial_augment(image)
         if self.augment_mode == "frequency":
@@ -300,6 +324,44 @@ class SprayImageDatasetV2(Dataset):
         beta = random.uniform(-18.0, 18.0)
         augmented = np.clip(augmented.astype(np.float32) * alpha + beta, 0, 255).astype(np.uint8)
         return augmented
+
+    def _spatial_only_augment(self, image: np.ndarray) -> np.ndarray:
+        augmented = image.copy()
+        if random.random() < 0.5:
+            augmented = cv2.flip(augmented, 1)
+        if random.random() < 0.3:
+            augmented = cv2.flip(augmented, 0)
+
+        angle = random.uniform(-self.rotation_deg, self.rotation_deg)
+        scale = random.uniform(0.96, 1.04)
+        center = (self.image_size / 2.0, self.image_size / 2.0)
+        matrix = cv2.getRotationMatrix2D(center, angle, scale)
+        augmented = cv2.warpAffine(
+            augmented,
+            matrix,
+            (self.image_size, self.image_size),
+            flags=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_REFLECT_101,
+        )
+        return augmented
+
+    def _photometric_augment(self, image: np.ndarray) -> np.ndarray:
+        augmented = image.copy()
+        alpha = random.uniform(1.0 - self.brightness_jitter, 1.0 + self.brightness_jitter)
+        beta = random.uniform(-18.0, 18.0)
+        augmented = np.clip(augmented.astype(np.float32) * alpha + beta, 0, 255).astype(np.uint8)
+        return augmented
+
+    def _frequency_only_augment(self, image: np.ndarray) -> np.ndarray:
+        image_float = image.astype(np.float32) / 255.0
+        spectrum = np.fft.fft2(image_float)
+        amplitude = np.abs(spectrum)
+        phase = np.angle(spectrum)
+        noise = np.random.normal(0.0, self.fft_noise_scale, size=image_float.shape).astype(np.float32)
+        amplitude = amplitude * np.clip(1.0 + noise, 0.85, 1.15)
+        perturbed = np.fft.ifft2(amplitude * np.exp(1j * phase)).real
+        perturbed = np.clip(perturbed, 0.0, 1.0)
+        return (perturbed * 255.0).astype(np.uint8)
 
     def _frequency_augment(self, image: np.ndarray) -> np.ndarray:
         augmented = self._spatial_augment(image)
@@ -336,6 +398,7 @@ def build_dataloaders_v2(config: dict[str, Any], max_test_samples: int | None = 
     patching = config.get("patching", {})
     augment = config["augment"]
     training = config["training"]
+    selection = config.get("selection", {})
     loader_kwargs = resolve_dataloader_kwargs(training)
 
     common = {
@@ -355,10 +418,32 @@ def build_dataloaders_v2(config: dict[str, Any], max_test_samples: int | None = 
         "min_patch_std": patching.get("min_patch_std", 8.0),
         "cache_enabled": patching.get("cache_enabled", False),
         "cache_dir": patching.get("cache_dir"),
+        "augment_methods": augment.get("methods"),
         "fft_noise_scale": augment.get("fft_noise_scale", 0.06),
         "rotation_deg": augment.get("rotation_deg", 6.0),
         "brightness_jitter": augment.get("brightness_jitter", 0.08),
     }
+
+    calibration_defect_config = selection.get("calibration_defect", {})
+    calibration_defect_enabled = bool(calibration_defect_config.get("enabled", False))
+    calibration_defect_paths: set[str] | None = None
+    test_selected_paths: set[str] | None = None
+    if calibration_defect_enabled:
+        normal_paths = {
+            _normalize_path_key(path)
+            for path in sorted((Path(data_root) / "test" / "normal").glob("*.jpg"))
+        }
+        defect_paths = [
+            _normalize_path_key(path)
+            for path in sorted((Path(data_root) / "test" / "defect").glob("*.jpg"))
+        ]
+        if defect_paths:
+            defect_count = int(calibration_defect_config.get("defect_count", 20))
+            defect_count = max(0, min(defect_count, max(len(defect_paths) - 1, 0)))
+            rng = np.random.default_rng(int(calibration_defect_config.get("seed", config.get("seed", 42))))
+            chosen_indices = rng.choice(len(defect_paths), size=defect_count, replace=False) if defect_count > 0 else []
+            calibration_defect_paths = {defect_paths[int(index)] for index in chosen_indices}
+            test_selected_paths = normal_paths | (set(defect_paths) - calibration_defect_paths)
 
     datasets = {
         "train": SprayImageDatasetV2(
@@ -374,12 +459,20 @@ def build_dataloaders_v2(config: dict[str, Any], max_test_samples: int | None = 
         "test": SprayImageDatasetV2(
             split="test",
             augment_mode="none",
+            selected_paths=test_selected_paths,
             max_samples=max_test_samples,
             **common,
         ),
     }
+    if calibration_defect_paths:
+        datasets["calibration_defect"] = SprayImageDatasetV2(
+            split="test",
+            augment_mode="none",
+            selected_paths=calibration_defect_paths,
+            **common,
+        )
 
-    return {
+    loaders = {
         "train": DataLoader(
             datasets["train"],
             shuffle=True,
@@ -396,3 +489,10 @@ def build_dataloaders_v2(config: dict[str, Any], max_test_samples: int | None = 
             **loader_kwargs,
         ),
     }
+    if "calibration_defect" in datasets:
+        loaders["calibration_defect"] = DataLoader(
+            datasets["calibration_defect"],
+            shuffle=False,
+            **loader_kwargs,
+        )
+    return loaders
