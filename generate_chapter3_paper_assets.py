@@ -9,6 +9,7 @@ from typing import Any
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+from matplotlib import rcParams
 from torch import amp
 
 from spray_defect.anomaly import compute_batch_scores
@@ -24,6 +25,25 @@ METRIC_FIELDS = [
     ("F1-score", "f1_score"),
     ("AUC", "auc"),
 ]
+
+METHOD_COLORS = {
+    "AE": "#7A7A7A",
+    "PaDiM": "#5E7D6A",
+    "ResNet18": "#A86F3D",
+    "LUAE (Ours)": "#355C7D",
+}
+
+METHOD_LINESTYLES = {
+    "AE": "-",
+    "PaDiM": "--",
+    "ResNet18": "-.",
+    "LUAE (Ours)": ":",
+}
+
+
+def _configure_plot_style() -> None:
+    rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei", "Noto Sans CJK SC", "Arial Unicode MS", "DejaVu Sans"]
+    rcParams["axes.unicode_minus"] = False
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -126,10 +146,29 @@ def _write_markdown_table(rows: list[dict[str, Any]], path: Path) -> None:
     path.write_text("\n".join(lines), encoding="utf-8")
 
 
-def _plot_bar_chart(rows: list[dict[str, Any]], path: Path) -> None:
+def _write_markdown_table_en(rows: list[dict[str, Any]], path: Path) -> None:
+    ensure_dir(path.parent)
+    headers = ["Method"] + [label for label, _ in METRIC_FIELDS]
+    lines = [
+        "| " + " | ".join(headers) + " |",
+        "| " + " | ".join(["---"] * len(headers)) + " |",
+    ]
+    for row in rows:
+        values = [row["Method"]]
+        for _, key in METRIC_FIELDS:
+            numeric = _to_float(row.get(key))
+            values.append("TBD" if numeric is None else f"{numeric:.4f}")
+        lines.append("| " + " | ".join(values) + " |")
+    path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def _plot_bar_chart(rows: list[dict[str, Any]], path: Path, *, language: str) -> None:
+    _configure_plot_style()
     valid_rows = [row for row in rows if any(_to_float(row.get(key)) is not None for _, key in METRIC_FIELDS)]
     methods = [row["Method"] for row in valid_rows]
     metrics = [label for label, _ in METRIC_FIELDS]
+    if language == "zh":
+        metrics = ["准确率", "精确率", "召回率", "F1值", "AUC"]
     values = np.array(
         [
             [_to_float(row.get(key)) if _to_float(row.get(key)) is not None else np.nan for _, key in METRIC_FIELDS]
@@ -138,42 +177,79 @@ def _plot_bar_chart(rows: list[dict[str, Any]], path: Path) -> None:
         dtype=np.float32,
     )
 
-    plt.figure(figsize=(10, 5.5))
+    plt.figure(figsize=(10.5, 6.0))
     x = np.arange(len(metrics))
     width = 0.18 if len(methods) >= 4 else 0.24
     offsets = (np.arange(len(methods)) - (len(methods) - 1) / 2.0) * width
     for index, method in enumerate(methods):
-        plt.bar(x + offsets[index], values[index], width=width, label=method)
+        bars = plt.bar(
+            x + offsets[index],
+            values[index],
+            width=width,
+            label=method,
+            color=METHOD_COLORS.get(method, "#666666"),
+            edgecolor="#333333",
+            linewidth=0.6,
+        )
+        for bar in bars:
+            height = float(bar.get_height())
+            if np.isnan(height):
+                continue
+            plt.text(
+                bar.get_x() + bar.get_width() / 2.0,
+                height + 0.012,
+                f"{height:.3f}",
+                ha="center",
+                va="bottom",
+                fontsize=8,
+                rotation=90,
+            )
 
     plt.xticks(x, metrics)
     plt.ylim(0.0, 1.05)
-    plt.ylabel("Score")
-    plt.title("Chapter 3 Method Comparison")
+    plt.ylabel("指标值" if language == "zh" else "Score")
+    plt.title("第三章算法定量对比" if language == "zh" else "Chapter 3 Quantitative Comparison")
     plt.grid(axis="y", alpha=0.25)
     plt.legend()
     plt.tight_layout()
-    plt.savefig(path, dpi=220)
+    plt.savefig(path, dpi=400)
     plt.close()
 
 
-def _plot_line_chart(rows: list[dict[str, Any]], path: Path) -> None:
+def _plot_line_chart(rows: list[dict[str, Any]], path: Path, *, language: str) -> None:
+    _configure_plot_style()
     valid_rows = [row for row in rows if any(_to_float(row.get(key)) is not None for _, key in METRIC_FIELDS)]
     metrics = [label for label, _ in METRIC_FIELDS]
+    if language == "zh":
+        metrics = ["准确率", "精确率", "召回率", "F1值", "AUC"]
     x = np.arange(len(metrics))
 
-    plt.figure(figsize=(10, 5.5))
+    plt.figure(figsize=(10.5, 6.0))
     for row in valid_rows:
         y = [_to_float(row.get(key)) if _to_float(row.get(key)) is not None else np.nan for _, key in METRIC_FIELDS]
-        plt.plot(x, y, marker="o", linewidth=2, label=row["Method"])
+        plt.plot(
+            x,
+            y,
+            marker="o",
+            markersize=5.5,
+            linewidth=2.2,
+            linestyle=METHOD_LINESTYLES.get(row["Method"], "-"),
+            color=METHOD_COLORS.get(row["Method"], "#666666"),
+            label=row["Method"],
+        )
+        for index, value in enumerate(y):
+            if value is None or np.isnan(value):
+                continue
+            plt.text(x[index], float(value) + 0.016, f"{float(value):.3f}", ha="center", va="bottom", fontsize=8)
 
     plt.xticks(x, metrics)
     plt.ylim(0.0, 1.05)
-    plt.ylabel("Score")
-    plt.title("Chapter 3 Method Trend Comparison")
+    plt.ylabel("指标值" if language == "zh" else "Score")
+    plt.title("第三章算法指标趋势对比" if language == "zh" else "Chapter 3 Metric Trend Comparison")
     plt.grid(alpha=0.25)
     plt.legend()
     plt.tight_layout()
-    plt.savefig(path, dpi=220)
+    plt.savefig(path, dpi=400)
     plt.close()
 
 
@@ -237,6 +313,7 @@ def _collect_residual_examples(
                         "label": int(info["label"]),
                         "predicted_label": int(info["predicted_label"]),
                         "image_score": float(info["anomaly_score"]),
+                        "threshold": float(info.get("threshold", 0.0)),
                         "patch_score": patch_score,
                         "input": image_array[index, 0],
                         "reconstruction": recon_array[index, 0],
@@ -250,10 +327,11 @@ def _collect_residual_examples(
     return examples
 
 
-def _save_residual_grid(samples: list[dict[str, Any]], path: Path) -> None:
+def _save_residual_grid(samples: list[dict[str, Any]], path: Path, *, language: str) -> None:
     if not samples:
         return
 
+    _configure_plot_style()
     ensure_dir(path.parent)
     rows = len(samples)
     fig, axes = plt.subplots(rows, 3, figsize=(9, 3 * rows))
@@ -261,21 +339,28 @@ def _save_residual_grid(samples: list[dict[str, Any]], path: Path) -> None:
         axes = np.expand_dims(axes, axis=0)
 
     for index, sample in enumerate(samples):
-        label_name = "Defect" if sample["label"] == 1 else "Normal"
-        pred_name = "Defect" if sample["predicted_label"] == 1 else "Normal"
+        label_name = ("缺陷" if sample["label"] == 1 else "正常") if language == "zh" else ("Defect" if sample["label"] == 1 else "Normal")
+        pred_name = ("缺陷" if sample["predicted_label"] == 1 else "正常") if language == "zh" else ("Defect" if sample["predicted_label"] == 1 else "Normal")
+        threshold = max(float(sample.get("threshold", 0.0)), 1e-8)
+        score_ratio = float(sample["image_score"]) / threshold
         axes[index, 0].imshow(sample["input"], cmap="gray")
-        axes[index, 0].set_title(
-            f"Input Patch\n{label_name} | img={sample['image_score']:.4f} | patch={sample['patch_score']:.4f}"
-        )
+        if language == "zh":
+            axes[index, 0].set_title(
+                f"输入Patch\n{label_name} | 图像分数={sample['image_score']:.4f} | 阈值比={score_ratio:.2f}x"
+            )
+        else:
+            axes[index, 0].set_title(
+                f"Input Patch\n{label_name} | img={sample['image_score']:.4f} | ratio={score_ratio:.2f}x"
+            )
         axes[index, 1].imshow(sample["reconstruction"], cmap="gray")
-        axes[index, 1].set_title("Reconstruction")
+        axes[index, 1].set_title("重建结果" if language == "zh" else "Reconstruction")
         axes[index, 2].imshow(sample["heatmap"], cmap="inferno")
-        axes[index, 2].set_title(f"Residual Map\nPred={pred_name}")
+        axes[index, 2].set_title(("残差热图\n预测=" if language == "zh" else "Residual Map\nPred=") + pred_name)
         for axis in axes[index]:
             axis.axis("off")
 
     plt.tight_layout()
-    plt.savefig(path, dpi=220)
+    plt.savefig(path, dpi=400)
     plt.close()
 
 
@@ -314,9 +399,13 @@ def main() -> None:
     _apply_metrics_to_rows(rows, "LUAE (Ours)", luae_metrics_path)
     _write_comparison_csv(rows, comparison_csv_path)
 
-    _write_markdown_table(rows, output_dir / "chapter3_method_comparison.md")
-    _plot_bar_chart(rows, output_dir / "chapter3_method_comparison_bar.png")
-    _plot_line_chart(rows, output_dir / "chapter3_method_comparison_line.png")
+    _write_markdown_table(rows, output_dir / "chapter3_method_comparison_zh.md")
+    _write_markdown_table_en(rows, output_dir / "chapter3_method_comparison_en.md")
+    _plot_bar_chart(rows, output_dir / "chapter3_method_comparison_bar_zh.png", language="zh")
+    _plot_bar_chart(rows, output_dir / "chapter3_method_comparison_bar_en.png", language="en")
+    _plot_line_chart(rows, output_dir / "chapter3_method_comparison_line_zh.png", language="zh")
+    _plot_line_chart(rows, output_dir / "chapter3_method_comparison_line_en.png", language="en")
+    _write_comparison_csv(rows, comparison_csv_path)
 
     residual_examples = _collect_residual_examples(
         luae_checkpoint_path,
@@ -325,13 +414,18 @@ def main() -> None:
         num_normal=args.num_normal,
         num_defect=args.num_defect,
     )
-    _save_residual_grid(residual_examples, output_dir / "chapter3_luae_residual_maps.png")
+    _save_residual_grid(residual_examples, output_dir / "chapter3_luae_residual_maps_zh.png", language="zh")
+    _save_residual_grid(residual_examples, output_dir / "chapter3_luae_residual_maps_en.png", language="en")
 
     print(f"comparison_csv={comparison_csv_path}")
-    print(f"table_md={output_dir / 'chapter3_method_comparison.md'}")
-    print(f"bar_chart={output_dir / 'chapter3_method_comparison_bar.png'}")
-    print(f"line_chart={output_dir / 'chapter3_method_comparison_line.png'}")
-    print(f"residual_maps={output_dir / 'chapter3_luae_residual_maps.png'}")
+    print(f"table_md_zh={output_dir / 'chapter3_method_comparison_zh.md'}")
+    print(f"table_md_en={output_dir / 'chapter3_method_comparison_en.md'}")
+    print(f"bar_chart_zh={output_dir / 'chapter3_method_comparison_bar_zh.png'}")
+    print(f"bar_chart_en={output_dir / 'chapter3_method_comparison_bar_en.png'}")
+    print(f"line_chart_zh={output_dir / 'chapter3_method_comparison_line_zh.png'}")
+    print(f"line_chart_en={output_dir / 'chapter3_method_comparison_line_en.png'}")
+    print(f"residual_maps_zh={output_dir / 'chapter3_luae_residual_maps_zh.png'}")
+    print(f"residual_maps_en={output_dir / 'chapter3_luae_residual_maps_en.png'}")
 
 
 if __name__ == "__main__":

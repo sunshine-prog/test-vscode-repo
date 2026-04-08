@@ -11,6 +11,7 @@ from typing import Any
 import matplotlib.pyplot as plt
 import numpy as np
 from sklearn.metrics import roc_curve
+from scipy.interpolate import PchipInterpolator
 
 from spray_defect.config import ensure_dir, load_yaml, save_csv, save_json
 from spray_defect.trainer import train_and_evaluate
@@ -20,24 +21,42 @@ from spray_defect.trainer_v2 import train_and_evaluate_v2
 AUGMENT_VARIANTS: dict[str, dict[str, Any]] = {
     "none": {
         "label": "No Augmentation",
+        "label_zh": "无增强",
         "mode": "none",
         "methods": None,
     },
     "spatial": {
         "label": "Spatial",
+        "label_zh": "空间增强",
         "mode": "spatial",
         "methods": ["spatial"],
     },
     "frequency": {
         "label": "Frequency",
+        "label_zh": "频率增强",
         "mode": "frequency",
         "methods": ["frequency"],
     },
     "spatial_frequency": {
         "label": "Spatial + Frequency",
+        "label_zh": "空间+频率增强",
         "mode": "spatial",
         "methods": ["spatial", "frequency"],
     },
+}
+
+AUGMENT_COLORS = {
+    "none": "#596275",
+    "spatial": "#6D597A",
+    "frequency": "#5E8C61",
+    "spatial_frequency": "#A1794A",
+}
+
+AUGMENT_LINESTYLES = {
+    "none": "-",
+    "spatial": "--",
+    "frequency": "-.",
+    "spatial_frequency": ":",
 }
 
 
@@ -92,18 +111,26 @@ def _load_predictions(predictions_path: Path) -> tuple[np.ndarray, np.ndarray]:
 
 
 def _build_roc_statistics(prediction_paths: list[Path]) -> dict[str, Any]:
-    fpr_grid = np.linspace(0.0, 1.0, 201)
+    fpr_grid = np.linspace(0.0, 1.0, 1001)
     tpr_curves: list[np.ndarray] = []
     aucs: list[float] = []
     for predictions_path in prediction_paths:
         labels, scores = _load_predictions(predictions_path)
         fpr, tpr, _ = roc_curve(labels, scores)
-        interpolated = np.interp(fpr_grid, fpr, tpr)
+        unique_fpr = np.unique(fpr)
+        unique_tpr = np.array([float(np.max(tpr[fpr == value])) for value in unique_fpr], dtype=np.float32)
+        if unique_fpr[0] > 0.0:
+            unique_fpr = np.insert(unique_fpr, 0, 0.0)
+            unique_tpr = np.insert(unique_tpr, 0, 0.0)
+        if unique_fpr[-1] < 1.0:
+            unique_fpr = np.append(unique_fpr, 1.0)
+            unique_tpr = np.append(unique_tpr, 1.0)
+        interpolator = PchipInterpolator(unique_fpr, unique_tpr)
+        interpolated = interpolator(fpr_grid)
+        interpolated = np.maximum.accumulate(np.clip(interpolated, 0.0, 1.0))
         interpolated[0] = 0.0
         interpolated[-1] = 1.0
         tpr_curves.append(interpolated.astype(np.float32))
-
-        from sklearn.metrics import roc_auc_score
 
         aucs.append(float(roc_auc_score(labels, scores)))
 
