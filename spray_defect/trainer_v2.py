@@ -15,7 +15,6 @@ from .anomaly import (
     aggregate_patch_rows,
     assign_severity,
     compute_batch_scores,
-    estimate_threshold,
     estimate_threshold_with_labels,
     extract_region_features,
 )
@@ -23,6 +22,7 @@ from .config import build_scheduler, choose_device, configure_reproducibility, e
 from .data_v2 import build_dataloaders_v2
 from .losses import MSESSIMLoss
 from .models import LightweightUNetAutoEncoder, count_parameters
+from .training_utils import ExponentialMovingAverage, apply_denoising_noise
 from .visualization import (
     save_confusion_heatmap,
     save_reconstruction_examples,
@@ -38,6 +38,8 @@ def _run_epoch(
     optimizer: torch.optim.Optimizer | None,
     device: torch.device,
     amp_enabled: bool,
+    denoising_config: dict[str, Any] | None = None,
+    ema_helper: ExponentialMovingAverage | None = None,
 ) -> tuple[float, float, float]:
     is_train = optimizer is not None
     model.train(is_train)
@@ -51,11 +53,12 @@ def _run_epoch(
     progress = tqdm(loader, desc="Train" if is_train else "Val", leave=False)
     for batch in progress:
         images = batch["image"].to(device, non_blocking=device.type == "cuda")
+        inputs = apply_denoising_noise(images, denoising_config) if is_train else images
         if is_train:
             optimizer.zero_grad(set_to_none=True)
 
         with amp.autocast(device_type=device.type, enabled=amp_enabled):
-            reconstructions = model(images)
+            reconstructions = model(inputs)
             loss, parts = criterion(reconstructions, images)
 
         if is_train:
@@ -66,6 +69,8 @@ def _run_epoch(
             else:
                 loss.backward()
                 optimizer.step()
+            if ema_helper is not None:
+                ema_helper.update(model)
 
         batch_size = images.size(0)
         total_loss += float(loss.detach().cpu().item()) * batch_size
@@ -215,6 +220,11 @@ def train_and_evaluate_v2(config: dict[str, Any], max_test_samples: int | None =
         norm_type=norm_type,
         group_count=group_count,
     ).to(device)
+    ema_config = training_config.get("ema", {})
+    ema_enabled = bool(ema_config.get("enabled", False))
+    ema_decay = float(ema_config.get("decay", 0.995))
+    ema_helper = ExponentialMovingAverage(model, enabled=ema_enabled, decay=ema_decay)
+    denoising_config = training_config.get("denoising", {})
     criterion = MSESSIMLoss(
         mse_weight=config["loss"]["mse_weight"],
         ssim_weight=config["loss"]["ssim_weight"],
@@ -245,9 +255,17 @@ def train_and_evaluate_v2(config: dict[str, Any], max_test_samples: int | None =
 
     for epoch in range(1, training_config["epochs"] + 1):
         train_loss, train_mse, train_ssim = _run_epoch(
-            model, loaders["train"], criterion, optimizer, device, amp_enabled
+            model,
+            loaders["train"],
+            criterion,
+            optimizer,
+            device,
+            amp_enabled,
+            denoising_config=denoising_config,
+            ema_helper=ema_helper,
         )
-        val_loss, val_mse, val_ssim = _run_epoch(model, loaders["val"], criterion, None, device, amp_enabled)
+        eval_model = ema_helper.get_eval_model(model)
+        val_loss, val_mse, val_ssim = _run_epoch(eval_model, loaders["val"], criterion, None, device, amp_enabled)
         if scheduler is not None:
             scheduler.step()
 
@@ -261,7 +279,7 @@ def train_and_evaluate_v2(config: dict[str, Any], max_test_samples: int | None =
         calibration_auc: float | None = None
         if monitor == "calibration_auc" and defect_monitor_loader is not None:
             calibration_auc = _compute_calibration_auc(
-                model,
+                eval_model,
                 loaders["val"],
                 defect_monitor_loader,
                 config["scoring"],
@@ -290,7 +308,7 @@ def train_and_evaluate_v2(config: dict[str, Any], max_test_samples: int | None =
                 best_monitor_value = val_loss
 
         if improved:
-            best_state = copy.deepcopy(model.state_dict())
+            best_state = copy.deepcopy(eval_model.state_dict())
             early_stop_counter = 0
         else:
             early_stop_counter += 1
@@ -361,6 +379,9 @@ def train_and_evaluate_v2(config: dict[str, Any], max_test_samples: int | None =
         "selection_monitor": monitor,
         "defect_monitor_source": defect_monitor_source,
         "threshold_method": str(config["scoring"].get("threshold_method", "mean_std")),
+        "ema_enabled": ema_enabled,
+        "ema_decay": ema_decay if ema_enabled else 0.0,
+        "denoising_enabled": bool(denoising_config.get("enabled", False)),
         "best_monitor_value": float(best_monitor_value),
         "seed": int(config["seed"]),
         "deterministic": bool(reproducibility_state["deterministic"]),
