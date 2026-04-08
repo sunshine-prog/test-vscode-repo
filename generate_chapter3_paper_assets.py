@@ -80,6 +80,22 @@ def _build_default_comparison_rows(outputs_root: Path, luae_metrics_path: Path) 
     return rows
 
 
+def _apply_metrics_to_rows(rows: list[dict[str, Any]], method_name: str, metrics_path: Path) -> None:
+    metrics = _load_json(metrics_path)
+    for row in rows:
+        if row["Method"] != method_name:
+            continue
+        row["Source"] = str(metrics_path)
+        for _, key in METRIC_FIELDS:
+            row[key] = metrics.get(key, "")
+        return
+
+    new_row: dict[str, Any] = {"Method": method_name, "Source": str(metrics_path)}
+    for _, key in METRIC_FIELDS:
+        new_row[key] = metrics.get(key, "")
+    rows.append(new_row)
+
+
 def _write_comparison_csv(rows: list[dict[str, Any]], path: Path) -> None:
     ensure_dir(path.parent)
     fieldnames = ["Method"] + [key for _, key in METRIC_FIELDS] + ["Source"]
@@ -268,6 +284,8 @@ def main() -> None:
     parser.add_argument("--device", default="auto", help="Device for residual visualization")
     parser.add_argument("--num-normal", type=int, default=2, help="Number of normal residual examples")
     parser.add_argument("--num-defect", type=int, default=4, help="Number of defect residual examples")
+    parser.add_argument("--padim-metrics", default=None, help="Optional PaDiM metrics JSON path")
+    parser.add_argument("--resnet18-metrics", default=None, help="Optional ResNet18 metrics JSON path")
     args = parser.parse_args()
 
     outputs_root = Path(args.outputs_root)
@@ -283,7 +301,14 @@ def main() -> None:
         rows = _load_comparison_csv(comparison_csv_path)
     else:
         rows = _build_default_comparison_rows(outputs_root, luae_metrics_path)
-        _write_comparison_csv(rows, comparison_csv_path)
+
+    if args.padim_metrics:
+        _apply_metrics_to_rows(rows, "PaDiM", Path(args.padim_metrics))
+    if args.resnet18_metrics:
+        _apply_metrics_to_rows(rows, "ResNet18", Path(args.resnet18_metrics))
+
+    _apply_metrics_to_rows(rows, "LUAE (Ours)", luae_metrics_path)
+    _write_comparison_csv(rows, comparison_csv_path)
 
     _write_markdown_table(rows, output_dir / "chapter3_method_comparison.md")
     _plot_bar_chart(rows, output_dir / "chapter3_method_comparison_bar.png")
