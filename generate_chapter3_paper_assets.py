@@ -215,8 +215,7 @@ def _collect_residual_examples(
     amp_enabled = bool(config["training"].get("amp", False)) and device.type == "cuda"
     targets = _select_residual_targets(predictions_path, num_normal=num_normal, num_defect=num_defect)
     target_paths = {row["path"]: row for row in targets}
-
-    examples: list[dict[str, Any]] = []
+    best_examples: dict[str, dict[str, Any]] = {}
     with torch.inference_mode():
         for batch in loader:
             images = batch["image"].to(device, non_blocking=device.type == "cuda")
@@ -230,21 +229,24 @@ def _collect_residual_examples(
                 if path not in target_paths:
                     continue
                 info = target_paths[path]
-                examples.append(
-                    {
+                patch_score = float(np.quantile(anomaly_maps[index], 0.995))
+                current = best_examples.get(path)
+                if current is None or patch_score > float(current["patch_score"]):
+                    best_examples[path] = {
                         "path": path,
                         "label": int(info["label"]),
                         "predicted_label": int(info["predicted_label"]),
-                        "score": float(info["anomaly_score"]),
+                        "image_score": float(info["anomaly_score"]),
+                        "patch_score": patch_score,
                         "input": image_array[index, 0],
                         "reconstruction": recon_array[index, 0],
                         "heatmap": anomaly_maps[index],
                     }
-                )
-            if len(examples) >= len(target_paths):
+            if len(best_examples) >= len(target_paths):
                 break
 
-    examples.sort(key=lambda item: (item["label"], -item["score"]))
+    examples = [best_examples[path] for path in target_paths if path in best_examples]
+    examples.sort(key=lambda item: (item["label"], -item["image_score"]))
     return examples
 
 
@@ -262,7 +264,9 @@ def _save_residual_grid(samples: list[dict[str, Any]], path: Path) -> None:
         label_name = "Defect" if sample["label"] == 1 else "Normal"
         pred_name = "Defect" if sample["predicted_label"] == 1 else "Normal"
         axes[index, 0].imshow(sample["input"], cmap="gray")
-        axes[index, 0].set_title(f"Input\n{label_name} | score={sample['score']:.4f}")
+        axes[index, 0].set_title(
+            f"Input Patch\n{label_name} | img={sample['image_score']:.4f} | patch={sample['patch_score']:.4f}"
+        )
         axes[index, 1].imshow(sample["reconstruction"], cmap="gray")
         axes[index, 1].set_title("Reconstruction")
         axes[index, 2].imshow(sample["heatmap"], cmap="inferno")

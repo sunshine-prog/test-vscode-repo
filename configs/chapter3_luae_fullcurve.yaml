@@ -1,0 +1,100 @@
+seed: 42
+
+reproducibility:
+  deterministic: true
+  warn_only: true
+  cublas_workspace_config: ":4096:8"
+
+model:
+  base_channels: 32
+  norm_type: batchnorm
+  group_count: 8
+
+paths:
+  data_root: D:/pythonProject2/dataset_real
+  output_root: D:/pythonProject2/outputs/chapter3_fullcurve
+
+preprocess:
+  image_size: 256
+  roi: null
+  normalize_orientation: true
+  auto_crop: true
+  clahe: true
+  gaussian_blur: true
+  median_blur: true
+  pad_mode: mean
+
+patching:
+  enabled: true
+  patch_size: 768
+  patch_stride: 640
+  max_patches_per_image: 18
+  min_patch_std: 8.0
+  cache_enabled: true
+  cache_dir: D:/pythonProject2/outputs/chapter3_fullcurve/patch_cache
+  metadata_cache_enabled: true
+
+augment:
+  mode: spatial
+  methods:
+    - spatial
+    - photometric
+  fft_noise_scale: 0.06
+  rotation_deg: 6.0
+  brightness_jitter: 0.08
+
+training:
+  batch_size: 12
+  epochs: 120
+  learning_rate: 0.0005
+  weight_decay: 0.00001
+  early_stopping_patience: 20
+  early_stopping_min_delta: 0.00005
+  num_workers: auto
+  pin_memory: auto
+  persistent_workers: auto
+  prefetch_factor: 2
+  amp: true
+  cudnn_benchmark: false
+  device: cuda
+  scheduler:
+    type: cosine
+    min_lr_ratio: 0.01
+
+selection:
+  monitor: val_loss
+  split_manifest: configs/chapter3_split_manifest.json
+  calibration_defect:
+    enabled: false
+    defect_count: 20
+    seed: 42
+
+loss:
+  mse_weight: 0.7
+  ssim_weight: 0.3
+
+scoring:
+  residual_weight: 0.20
+  ssim_weight: 0.20
+  psnr_weight: 0.10
+  peak_weight: 0.50
+  peak_percentile: 99.0
+  aggregate_top_k: 3
+  aggregate_topk_weight: 1.0
+  aggregate_max_weight: 0.0
+  aggregate_quantile_weight: 0.0
+  aggregate_quantile: 0.90
+  region_defect_weight: 6.75
+  region_bbox_width_weight: 3.5
+  region_bbox_area_weight: 0.0
+  threshold_method: f1_search
+  threshold_std_factor: 2.0
+  threshold_percentile: 95.0
+  threshold_search_min_percentile: 80.0
+  threshold_search_max_percentile: 97.5
+  threshold_search_num_steps: 71
+  map_std_factor: 2.0
+  min_region_area: 20
+
+visualization:
+  num_examples: 6
