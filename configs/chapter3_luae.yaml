@@ -7,6 +7,8 @@ reproducibility:
 
 model:
   base_channels: 32
+  norm_type: batchnorm
+  group_count: 8
 
 paths:
   data_root: D:/pythonProject2/dataset_real
@@ -61,8 +63,9 @@ training:
 
 selection:
   monitor: calibration_auc
+  split_manifest: configs/chapter3_split_manifest.json
   calibration_defect:
-    enabled: true
+    enabled: false
     defect_count: 20
     seed: 42
 
@@ -76,11 +79,13 @@ scoring:
   psnr_weight: 0.10
   peak_weight: 0.50
   peak_percentile: 99.0
-  aggregate_max_weight: 0.75
-  aggregate_quantile_weight: 0.25
+  aggregate_top_k: 3
+  aggregate_topk_weight: 1.0
+  aggregate_max_weight: 0.0
+  aggregate_quantile_weight: 0.0
   aggregate_quantile: 0.90
-  region_defect_weight: 3.0
-  region_bbox_width_weight: 1.5
+  region_defect_weight: 6.75
+  region_bbox_width_weight: 3.5
   region_bbox_area_weight: 0.0
   threshold_method: percentile
   threshold_std_factor: 2.0

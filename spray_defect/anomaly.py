@@ -149,12 +149,21 @@ def assign_severity(score: float, threshold: float, defect_ratio: float) -> str:
     return "severe"
 
 
+def _topk_mean(values: list[float], top_k: int) -> float:
+    if not values:
+        return 0.0
+    limit = min(max(top_k, 1), len(values))
+    return float(np.mean(sorted(values, reverse=True)[:limit]))
+
+
 def aggregate_patch_rows(rows: list[dict[str, Any]], scoring_config: dict[str, Any], image_size: int) -> list[dict[str, Any]]:
     grouped: dict[tuple[str, int], list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
         grouped[(row["path"], int(row["label"]))].append(row)
 
     aggregated_rows: list[dict[str, Any]] = []
+    top_k = int(scoring_config.get("aggregate_top_k", 1))
+    topk_weight = float(scoring_config.get("aggregate_topk_weight", 0.0))
     max_weight = float(scoring_config.get("aggregate_max_weight", 1.0))
     quantile_weight = float(scoring_config.get("aggregate_quantile_weight", 0.0))
     aggregate_quantile = float(scoring_config.get("aggregate_quantile", 0.9))
@@ -164,11 +173,14 @@ def aggregate_patch_rows(rows: list[dict[str, Any]], scoring_config: dict[str, A
 
     for group_rows in grouped.values():
         scores = np.array([float(row["anomaly_score"]) for row in group_rows], dtype=np.float32)
-        aggregate_score = max_weight * float(scores.max())
+        sorted_rows = sorted(group_rows, key=lambda row: float(row["anomaly_score"]), reverse=True)
+        top_rows = sorted_rows[: min(max(top_k, 1), len(sorted_rows))]
+        aggregate_score = topk_weight * _topk_mean([float(row["anomaly_score"]) for row in group_rows], top_k)
+        aggregate_score += max_weight * float(scores.max())
         if quantile_weight > 0.0:
             aggregate_score += quantile_weight * float(np.quantile(scores, aggregate_quantile))
 
-        top_row = max(group_rows, key=lambda row: float(row["anomaly_score"]))
+        top_row = sorted_rows[0]
         aggregated = dict(top_row)
         aggregated["anomaly_score"] = aggregate_score
         aggregated["patch_count"] = len(group_rows)
@@ -187,13 +199,31 @@ def aggregate_patch_rows(rows: list[dict[str, Any]], scoring_config: dict[str, A
         aggregated["bbox_w"] = int(int(top_row["bbox_w"]) * patch_w / image_size)
         aggregated["bbox_h"] = int(int(top_row["bbox_h"]) * patch_h / image_size)
 
-        bbox_width_ratio = float(aggregated["bbox_w"]) / base_width
-        bbox_height_ratio = float(aggregated["bbox_h"]) / base_height
+        bbox_width_ratios: list[float] = []
+        bbox_height_ratios: list[float] = []
+        bbox_area_ratios: list[float] = []
+        defect_ratios: list[float] = []
+        for row in top_rows:
+            row_patch_w = int(row.get("patch_w", image_size))
+            row_patch_h = int(row.get("patch_h", image_size))
+            row_base_width = max(int(row.get("base_width", row_patch_w)), 1)
+            row_base_height = max(int(row.get("base_height", row_patch_h)), 1)
+            mapped_bbox_w = float(int(row["bbox_w"]) * row_patch_w / image_size)
+            mapped_bbox_h = float(int(row["bbox_h"]) * row_patch_h / image_size)
+            width_ratio = mapped_bbox_w / row_base_width
+            height_ratio = mapped_bbox_h / row_base_height
+            bbox_width_ratios.append(width_ratio)
+            bbox_height_ratios.append(height_ratio)
+            bbox_area_ratios.append(width_ratio * height_ratio)
+            defect_ratios.append(float(row["defect_ratio"]))
+
+        bbox_width_ratio = float(np.mean(bbox_width_ratios)) if bbox_width_ratios else 0.0
+        bbox_height_ratio = float(np.mean(bbox_height_ratios)) if bbox_height_ratios else 0.0
         bbox_area_ratio = bbox_width_ratio * bbox_height_ratio
         region_score = (
-            region_defect_weight * float(aggregated["defect_ratio"])
+            region_defect_weight * (float(np.mean(defect_ratios)) if defect_ratios else 0.0)
             + region_bbox_width_weight * bbox_width_ratio
-            + region_bbox_area_weight * bbox_area_ratio
+            + region_bbox_area_weight * (float(np.mean(bbox_area_ratios)) if bbox_area_ratios else 0.0)
         )
 
         aggregated["base_anomaly_score"] = aggregate_score

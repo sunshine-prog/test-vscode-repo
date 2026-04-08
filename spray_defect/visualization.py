@@ -30,6 +30,20 @@ def save_roc_curve(labels: list[int], scores: list[float], path: str | Path) -> 
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
 
+    if len(set(labels)) < 2:
+        plt.figure(figsize=(6, 6))
+        plt.text(0.5, 0.5, "ROC unavailable\nonly one class present", ha="center", va="center")
+        plt.xlim(0, 1)
+        plt.ylim(0, 1)
+        plt.xlabel("False Positive Rate")
+        plt.ylabel("True Positive Rate")
+        plt.title("ROC Curve")
+        plt.grid(alpha=0.25)
+        plt.tight_layout()
+        plt.savefig(target, dpi=200)
+        plt.close()
+        return float("nan")
+
     fpr, tpr, _ = roc_curve(labels, scores)
     roc_auc = auc(fpr, tpr)
     plt.figure(figsize=(6, 6))

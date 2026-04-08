@@ -44,7 +44,7 @@ def _run_epoch(
 
     progress = tqdm(loader, desc="Train" if is_train else "Val", leave=False)
     for batch in progress:
-        images = batch["image"].to(device)
+        images = batch["image"].to(device, non_blocking=device.type == "cuda")
         if is_train:
             optimizer.zero_grad(set_to_none=True)
 
@@ -78,18 +78,20 @@ def _collect_scores(
     device: torch.device,
     threshold: float | None = None,
     collect_examples: int = 0,
+    amp_enabled: bool = False,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], float]:
     model.eval()
     rows: list[dict[str, Any]] = []
     examples: list[dict[str, Any]] = []
     total_latency = 0.0
 
-    with torch.no_grad():
+    with torch.inference_mode():
         for batch in tqdm(loader, desc="Infer", leave=False):
-            images = batch["image"].to(device)
+            images = batch["image"].to(device, non_blocking=device.type == "cuda")
 
             start = perf_counter()
-            reconstructions = model(images)
+            with amp.autocast(device_type=device.type, enabled=amp_enabled):
+                reconstructions = model(images)
             total_latency += perf_counter() - start
 
             (
@@ -100,10 +102,11 @@ def _collect_scores(
                 psnr_score,
                 anomaly_maps,
                 peak_scores,
-            ) = compute_batch_scores(images, reconstructions, scoring_config)
+            ) = compute_batch_scores(images.float(), reconstructions.float(), scoring_config)
 
-            image_array = images.detach().cpu().numpy()
-            recon_array = reconstructions.detach().cpu().numpy()
+            need_example_arrays = len(examples) < collect_examples
+            image_array = images.detach().cpu().numpy() if need_example_arrays else None
+            recon_array = reconstructions.detach().cpu().numpy() if need_example_arrays else None
 
             labels = batch["label"].tolist()
             paths = batch["path"]
@@ -145,7 +148,7 @@ def _collect_scores(
 
                 rows.append(row)
 
-                if len(examples) < collect_examples:
+                if need_example_arrays and len(examples) < collect_examples:
                     examples.append(
                         {
                             "input": image_array[index, 0],
@@ -178,7 +181,13 @@ def train_and_evaluate(config: dict[str, Any], max_test_samples: int | None = No
         )
     model_config = config.get("model", {})
     base_channels = int(model_config.get("base_channels", 32))
-    model = LightweightUNetAutoEncoder(base_channels=base_channels).to(device)
+    norm_type = str(model_config.get("norm_type", "batchnorm"))
+    group_count = int(model_config.get("group_count", 8))
+    model = LightweightUNetAutoEncoder(
+        base_channels=base_channels,
+        norm_type=norm_type,
+        group_count=group_count,
+    ).to(device)
     criterion = MSESSIMLoss(
         mse_weight=config["loss"]["mse_weight"],
         ssim_weight=config["loss"]["ssim_weight"],
@@ -234,7 +243,7 @@ def train_and_evaluate(config: dict[str, Any], max_test_samples: int | None = No
 
     model.load_state_dict(best_state)
 
-    val_rows, _, _ = _collect_scores(model, loaders["val"], config["scoring"], device)
+    val_rows, _, _ = _collect_scores(model, loaders["val"], config["scoring"], device, amp_enabled=amp_enabled)
     val_scores = np.array([row["anomaly_score"] for row in val_rows], dtype=np.float32)
     threshold = estimate_threshold(val_scores, config["scoring"])
 
@@ -245,23 +254,27 @@ def train_and_evaluate(config: dict[str, Any], max_test_samples: int | None = No
         device,
         threshold=threshold,
         collect_examples=config["visualization"].get("num_examples", 6),
+        amp_enabled=amp_enabled,
     )
 
     labels = [int(row["label"]) for row in test_rows]
     predictions = [int(row["predicted_label"]) for row in test_rows]
     scores = [float(row["anomaly_score"]) for row in test_rows]
+    auc_value = float("nan") if len(set(labels)) < 2 else float(roc_auc_score(labels, scores))
 
     metrics = {
         "accuracy": float(accuracy_score(labels, predictions)),
         "precision": float(precision_score(labels, predictions, zero_division=0)),
         "recall": float(recall_score(labels, predictions, zero_division=0)),
         "f1_score": float(f1_score(labels, predictions, zero_division=0)),
-        "auc": float(roc_auc_score(labels, scores)),
+        "auc": auc_value,
         "threshold": float(threshold),
         "avg_inference_latency_ms": float(avg_latency_ms),
         "parameter_count": int(count_parameters(model)),
         "device": str(device),
         "base_channels": base_channels,
+        "norm_type": norm_type,
+        "group_count": group_count,
         "scheduler_type": str(training_config.get("scheduler", {}).get("type", "cosine")),
         "seed": int(config["seed"]),
         "deterministic": bool(reproducibility_state["deterministic"]),

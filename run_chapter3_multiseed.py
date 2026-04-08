@@ -29,6 +29,14 @@ def _apply_overrides(config: dict[str, Any], args: argparse.Namespace, seed: int
         updated["training"]["batch_size"] = args.batch_size
     if args.device is not None:
         updated["training"]["device"] = args.device
+    if args.learning_rate is not None:
+        updated["training"]["learning_rate"] = args.learning_rate
+    if args.scheduler_type is not None:
+        updated.setdefault("training", {}).setdefault("scheduler", {})["type"] = args.scheduler_type
+    if args.norm_type is not None:
+        updated.setdefault("model", {})["norm_type"] = args.norm_type
+    if args.group_count is not None:
+        updated.setdefault("model", {})["group_count"] = args.group_count
     if args.deterministic:
         updated.setdefault("reproducibility", {})["deterministic"] = True
 
@@ -73,6 +81,10 @@ def main() -> None:
     parser.add_argument("--epochs", type=int, default=None, help="Override the number of epochs")
     parser.add_argument("--batch-size", type=int, default=None, help="Override the batch size")
     parser.add_argument("--device", default=None, help="Override the device")
+    parser.add_argument("--learning-rate", type=float, default=None, help="Override the learning rate")
+    parser.add_argument("--scheduler-type", default=None, help="Override scheduler type")
+    parser.add_argument("--norm-type", default=None, help="Override model normalization type")
+    parser.add_argument("--group-count", type=int, default=None, help="Override group count for group normalization")
     parser.add_argument("--pipeline", choices=("auto", "base", "patch"), default="auto", help="Pipeline to use")
     parser.add_argument("--output-root", default=None, help="Root directory for multiseed outputs")
     parser.add_argument("--max-test-samples", type=int, default=None, help="Limit test samples for quick checks")

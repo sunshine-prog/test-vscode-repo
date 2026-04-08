@@ -24,6 +24,10 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=None, help="override the random seed")
     parser.add_argument("--output-root", default=None, help="override the output directory")
     parser.add_argument("--deterministic", action="store_true", help="enable deterministic training behavior")
+    parser.add_argument("--learning-rate", type=float, default=None, help="override the learning rate")
+    parser.add_argument("--norm-type", default=None, help="override model normalization type")
+    parser.add_argument("--group-count", type=int, default=None, help="override group count for group normalization")
+    parser.add_argument("--scheduler-type", default=None, help="override scheduler type")
     args = parser.parse_args()
 
     config = copy.deepcopy(load_yaml(args.config))
@@ -35,12 +39,20 @@ def main() -> None:
         config["training"]["batch_size"] = args.batch_size
     if args.device is not None:
         config["training"]["device"] = args.device
+    if args.learning_rate is not None:
+        config["training"]["learning_rate"] = args.learning_rate
     if args.seed is not None:
         config["seed"] = args.seed
     if args.output_root is not None:
         config["paths"]["output_root"] = args.output_root
     if args.deterministic:
         config.setdefault("reproducibility", {})["deterministic"] = True
+    if args.norm_type is not None:
+        config.setdefault("model", {})["norm_type"] = args.norm_type
+    if args.group_count is not None:
+        config.setdefault("model", {})["group_count"] = args.group_count
+    if args.scheduler_type is not None:
+        config.setdefault("training", {}).setdefault("scheduler", {})["type"] = args.scheduler_type
 
     patching_enabled = bool(config.get("patching", {}).get("enabled", False))
     use_patch_pipeline = args.pipeline == "patch" or (args.pipeline == "auto" and patching_enabled)
