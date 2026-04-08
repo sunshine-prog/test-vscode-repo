@@ -12,7 +12,7 @@ model:
 
 paths:
   data_root: D:/pythonProject2/dataset_real
-  output_root: D:/pythonProject2/outputs/chapter3
+  output_root: D:/pythonProject2/outputs/chapter3_stable
 
 preprocess:
   image_size: 256
@@ -31,7 +31,7 @@ patching:
   max_patches_per_image: 18
   min_patch_std: 8.0
   cache_enabled: true
-  cache_dir: D:/pythonProject2/outputs/chapter3/patch_cache
+  cache_dir: D:/pythonProject2/outputs/chapter3_stable/patch_cache
   metadata_cache_enabled: true
 
 augment:
@@ -55,7 +55,7 @@ training:
   persistent_workers: auto
   prefetch_factor: 2
   amp: true
-  cudnn_benchmark: true
+  cudnn_benchmark: false
   device: cuda
   scheduler:
     type: cosine

@@ -16,6 +16,7 @@ from .anomaly import (
     assign_severity,
     compute_batch_scores,
     estimate_threshold,
+    estimate_threshold_with_labels,
     extract_region_features,
 )
 from .config import build_scheduler, choose_device, configure_reproducibility, ensure_dir, save_csv, save_json
@@ -304,8 +305,29 @@ def train_and_evaluate_v2(config: dict[str, Any], max_test_samples: int | None =
     model.load_state_dict(best_state)
 
     val_rows, _, _ = _collect_scores(model, loaders["val"], config["scoring"], device, amp_enabled=amp_enabled)
-    val_scores = np.array([row["anomaly_score"] for row in val_rows], dtype=np.float32)
-    threshold = estimate_threshold(val_scores, config["scoring"])
+    threshold_rows = list(val_rows)
+    if "val_defect" in loaders:
+        val_defect_rows, _, _ = _collect_scores(
+            model,
+            loaders["val_defect"],
+            config["scoring"],
+            device,
+            amp_enabled=amp_enabled,
+        )
+        threshold_rows.extend(val_defect_rows)
+    elif "calibration_defect" in loaders:
+        calibration_rows, _, _ = _collect_scores(
+            model,
+            loaders["calibration_defect"],
+            config["scoring"],
+            device,
+            amp_enabled=amp_enabled,
+        )
+        threshold_rows.extend(calibration_rows)
+
+    threshold_scores = np.array([row["anomaly_score"] for row in threshold_rows], dtype=np.float32)
+    threshold_labels = np.array([int(row["label"]) for row in threshold_rows], dtype=np.int64)
+    threshold = estimate_threshold_with_labels(threshold_scores, threshold_labels, config["scoring"])
 
     test_rows, examples, avg_latency_ms = _collect_scores(
         model,
@@ -338,6 +360,7 @@ def train_and_evaluate_v2(config: dict[str, Any], max_test_samples: int | None =
         "scheduler_type": str(training_config.get("scheduler", {}).get("type", "cosine")),
         "selection_monitor": monitor,
         "defect_monitor_source": defect_monitor_source,
+        "threshold_method": str(config["scoring"].get("threshold_method", "mean_std")),
         "best_monitor_value": float(best_monitor_value),
         "seed": int(config["seed"]),
         "deterministic": bool(reproducibility_state["deterministic"]),

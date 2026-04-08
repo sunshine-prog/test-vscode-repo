@@ -45,6 +45,8 @@ def main() -> None:
         config["seed"] = args.seed
     if args.output_root is not None:
         config["paths"]["output_root"] = args.output_root
+        if config.get("patching", {}).get("cache_enabled", False):
+            config.setdefault("patching", {})["cache_dir"] = str(copy.deepcopy(args.output_root)) + "/patch_cache"
     if args.deterministic:
         config.setdefault("reproducibility", {})["deterministic"] = True
     if args.norm_type is not None:

@@ -8,6 +8,7 @@ import cv2
 import numpy as np
 import torch
 import torch.nn.functional as F
+from sklearn.metrics import f1_score
 
 from .losses import psnr_from_mse, structural_similarity
 
@@ -76,6 +77,58 @@ def estimate_threshold(scores: np.ndarray, scoring_config: dict[str, Any]) -> fl
     mean = float(np.mean(scores))
     std = float(np.std(scores))
     return mean + scoring_config.get("threshold_std_factor", 3.0) * std
+
+
+def estimate_threshold_with_labels(
+    scores: np.ndarray,
+    labels: np.ndarray,
+    scoring_config: dict[str, Any],
+) -> float:
+    method = str(scoring_config.get("threshold_method", "mean_std")).strip().lower()
+    scores = np.asarray(scores, dtype=np.float32)
+    labels = np.asarray(labels, dtype=np.int64)
+
+    if method not in {"f1_search", "f1"} or scores.size == 0 or labels.size != scores.size:
+        return estimate_threshold(scores, scoring_config)
+
+    unique_labels = np.unique(labels)
+    if unique_labels.size < 2:
+        normal_scores = scores[labels == 0]
+        return estimate_threshold(normal_scores if normal_scores.size else scores, scoring_config)
+
+    normal_scores = scores[labels == 0]
+    candidate_source = normal_scores if normal_scores.size else scores
+    min_percentile = float(scoring_config.get("threshold_search_min_percentile", 80.0))
+    max_percentile = float(scoring_config.get("threshold_search_max_percentile", 97.5))
+    num_steps = int(scoring_config.get("threshold_search_num_steps", 71))
+    percentiles = np.linspace(min_percentile, max_percentile, max(num_steps, 2))
+    thresholds = np.unique(np.percentile(candidate_source, percentiles))
+    if thresholds.size == 0:
+        return estimate_threshold(scores, scoring_config)
+
+    best_threshold = float(thresholds[0])
+    best_f1 = float("-inf")
+    best_recall = float("-inf")
+    best_precision = float("-inf")
+    for threshold in thresholds:
+        predictions = (scores > float(threshold)).astype(np.int64)
+        f1 = float(f1_score(labels, predictions, zero_division=0))
+        true_positive = int(np.sum((predictions == 1) & (labels == 1)))
+        predicted_positive = int(np.sum(predictions == 1))
+        actual_positive = int(np.sum(labels == 1))
+        precision = true_positive / max(predicted_positive, 1)
+        recall = true_positive / max(actual_positive, 1)
+        if (
+            f1 > best_f1
+            or (np.isclose(f1, best_f1) and recall > best_recall)
+            or (np.isclose(f1, best_f1) and np.isclose(recall, best_recall) and precision > best_precision)
+        ):
+            best_threshold = float(threshold)
+            best_f1 = f1
+            best_recall = recall
+            best_precision = precision
+
+    return best_threshold
 
 
 def extract_region_features(anomaly_map: np.ndarray, scoring_config: dict[str, Any]) -> dict[str, float | int]:

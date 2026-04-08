@@ -12,7 +12,7 @@ from torch import amp
 from torch.optim import Adam
 from tqdm import tqdm
 
-from .anomaly import assign_severity, compute_batch_scores, estimate_threshold, extract_region_features
+from .anomaly import assign_severity, compute_batch_scores, estimate_threshold_with_labels, extract_region_features
 from .config import build_scheduler, choose_device, configure_reproducibility, ensure_dir, save_csv, save_json
 from .data import build_dataloaders
 from .losses import MSESSIMLoss
@@ -244,8 +244,9 @@ def train_and_evaluate(config: dict[str, Any], max_test_samples: int | None = No
     model.load_state_dict(best_state)
 
     val_rows, _, _ = _collect_scores(model, loaders["val"], config["scoring"], device, amp_enabled=amp_enabled)
-    val_scores = np.array([row["anomaly_score"] for row in val_rows], dtype=np.float32)
-    threshold = estimate_threshold(val_scores, config["scoring"])
+    threshold_scores = np.array([row["anomaly_score"] for row in val_rows], dtype=np.float32)
+    threshold_labels = np.array([int(row["label"]) for row in val_rows], dtype=np.int64)
+    threshold = estimate_threshold_with_labels(threshold_scores, threshold_labels, config["scoring"])
 
     test_rows, examples, avg_latency_ms = _collect_scores(
         model,
@@ -276,6 +277,7 @@ def train_and_evaluate(config: dict[str, Any], max_test_samples: int | None = No
         "norm_type": norm_type,
         "group_count": group_count,
         "scheduler_type": str(training_config.get("scheduler", {}).get("type", "cosine")),
+        "threshold_method": str(config["scoring"].get("threshold_method", "mean_std")),
         "seed": int(config["seed"]),
         "deterministic": bool(reproducibility_state["deterministic"]),
     }

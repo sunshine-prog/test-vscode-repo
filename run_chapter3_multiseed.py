@@ -22,6 +22,8 @@ def _apply_overrides(config: dict[str, Any], args: argparse.Namespace, seed: int
     updated = copy.deepcopy(config)
     updated["seed"] = seed
     updated["paths"]["output_root"] = str(output_root)
+    if updated.get("patching", {}).get("cache_enabled", False):
+        updated.setdefault("patching", {})["cache_dir"] = str(output_root / "patch_cache")
 
     if args.epochs is not None:
         updated["training"]["epochs"] = args.epochs

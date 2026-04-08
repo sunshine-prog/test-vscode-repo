@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import random
 from dataclasses import dataclass
@@ -106,6 +107,22 @@ class SprayImageDatasetV2(Dataset):
         self.rotation_deg = rotation_deg
         self.brightness_jitter = brightness_jitter
         self.selected_paths = {_normalize_path_key(path) for path in selected_paths} if selected_paths else None
+        cache_signature = {
+            "image_size": self.image_size,
+            "roi": self.roi,
+            "normalize_orientation": self.normalize_orientation,
+            "auto_crop": self.auto_crop,
+            "clahe": self.clahe,
+            "gaussian_blur": self.gaussian_blur,
+            "median_blur": self.median_blur,
+            "pad_mode": self.pad_mode,
+            "patching_enabled": self.patching_enabled,
+            "patch_size": self.patch_size,
+            "patch_stride": self.patch_stride,
+        }
+        self.cache_key = hashlib.sha1(
+            json.dumps(cache_signature, sort_keys=True, ensure_ascii=True).encode("utf-8")
+        ).hexdigest()[:10]
 
         if image_records is not None:
             image_paths = list(image_records)
@@ -171,7 +188,7 @@ class SprayImageDatasetV2(Dataset):
         height, width = image.shape[:2]
 
         if not self.patching_enabled:
-            cache_path = self._build_cache_path(path, category, 0)
+            cache_path = self._build_cache_path(path, category, 0, 0, 0, width, height)
             if cache_path is not None and not cache_path.exists():
                 cache_path.parent.mkdir(parents=True, exist_ok=True)
                 cv2.imwrite(str(cache_path), self._finalize_patch(image))
@@ -212,7 +229,7 @@ class SprayImageDatasetV2(Dataset):
 
         records: list[SampleRecord] = []
         for patch_index, (x, y, patch_w, patch_h) in enumerate(candidates):
-            cache_path = self._build_cache_path(path, category, patch_index)
+            cache_path = self._build_cache_path(path, category, patch_index, x, y, patch_w, patch_h)
             if cache_path is not None and not cache_path.exists():
                 cache_path.parent.mkdir(parents=True, exist_ok=True)
                 patch = image[y : y + patch_h, x : x + patch_w]
@@ -412,10 +429,24 @@ class SprayImageDatasetV2(Dataset):
             positions.append(last)
         return positions
 
-    def _build_cache_path(self, path: Path, category: str, patch_index: int) -> Path | None:
+    def _build_cache_path(
+        self,
+        path: Path,
+        category: str,
+        patch_index: int,
+        patch_x: int,
+        patch_y: int,
+        patch_w: int,
+        patch_h: int,
+    ) -> Path | None:
         if not self.cache_enabled or self.cache_dir is None:
             return None
-        return self.cache_dir / self.split / category / f"{path.stem}_{patch_index:03d}.png"
+        return (
+            self.cache_dir
+            / self.split
+            / category
+            / f"{path.stem}_{self.cache_key}_{patch_index:03d}_x{patch_x}_y{patch_y}_w{patch_w}_h{patch_h}.png"
+        )
 
 
 def build_dataloaders_v2(config: dict[str, Any], max_test_samples: int | None = None) -> dict[str, DataLoader]:
