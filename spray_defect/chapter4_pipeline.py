@@ -17,6 +17,8 @@ from .config import ensure_dir, load_yaml, save_csv, save_json
 
 
 CONTROLLER_ORDER = ["PID", "Fuzzy-PID", "MA-GC", "RL-GC", "A-GC"]
+BASELINE_CONTROLLER = "PID"
+PROPOSED_CONTROLLER = "A-GC"
 
 CONTROLLER_LABELS = {
     "PID": "PID",
@@ -466,12 +468,12 @@ class AdaptiveGainController(BaseController):
         if observation.severity == "severe":
             bias_flow = 0.65
             bias_pressure = 0.003
-            bias_angle = -0.45 * np.sign(observation.spatial_error)
+            bias_angle = -0.30 * np.sign(observation.spatial_error)
             action = "强缺陷自适应补喷"
         elif observation.severity in {"slight", "medium"}:
             bias_flow = 0.25
             bias_pressure = 0.001
-            bias_angle = -0.20 * np.sign(observation.spatial_error)
+            bias_angle = -0.12 * np.sign(observation.spatial_error)
             action = "局部自适应补偿"
         else:
             bias_flow = 0.0
@@ -771,8 +773,39 @@ def _aggregate_summary(trial_rows: list[dict[str, Any]], scoring_config: dict[st
         row["composite_score"] = float(weighted_score)
         row["radar_scores"] = component_scores
 
-    summary_rows.sort(key=lambda row: row["composite_score"], reverse=True)
     return summary_rows, std_lookup
+
+
+def _find_controller_row(summary_rows: list[dict[str, Any]], controller_name: str) -> dict[str, Any] | None:
+    for row in summary_rows:
+        if row["controller"] == controller_name:
+            return row
+    return None
+
+
+def _find_best_row(summary_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    return max(summary_rows, key=lambda row: float(row["composite_score"]))
+
+
+def _build_baseline_improvements(summary_rows: list[dict[str, Any]]) -> dict[str, float]:
+    baseline_row = _find_controller_row(summary_rows, BASELINE_CONTROLLER)
+    proposed_row = _find_controller_row(summary_rows, PROPOSED_CONTROLLER)
+    if baseline_row is None or proposed_row is None:
+        return {}
+
+    improvements: dict[str, float] = {}
+    for metric_key, _, direction in METRIC_SPECS:
+        baseline_value = float(baseline_row[metric_key])
+        proposed_value = float(proposed_row[metric_key])
+        if abs(baseline_value) <= 1e-9:
+            improvements[metric_key] = 0.0
+            continue
+        if direction == "higher":
+            change = (proposed_value - baseline_value) / baseline_value * 100.0
+        else:
+            change = (baseline_value - proposed_value) / baseline_value * 100.0
+        improvements[metric_key] = float(change)
+    return improvements
 
 
 def _write_summary_csv(summary_rows: list[dict[str, Any]], path: Path) -> None:
@@ -1051,22 +1084,43 @@ def _write_experiment_note_v2(
     summary_rows: list[dict[str, Any]],
     phase_specs: list[PhaseSpec],
 ) -> None:
-    best_row = summary_rows[0]
+    best_row = _find_best_row(summary_rows)
+    baseline_row = _find_controller_row(summary_rows, BASELINE_CONTROLLER)
+    improvements = _build_baseline_improvements(summary_rows)
     lines = [
         "# 第四章控制实验说明",
         "",
         "1. 数据来源：直接读取第三章 LUAE 的 `test_predictions.csv`，以重建残差均值为主误差，并融合超阈值异常分数与缺陷面积比构造第四章视觉反馈误差输入。",
         f"2. 信号来源文件：`{source_csv}`。",
         "3. 扰动序列构造：基于 LUAE 输出的 `normal / slight / medium / severe` 四类残差样本，按“基线稳定 - 轻扰动 - 恢复 - 中扰动 - 恢复 - 重扰动 - 恢复”七段工况重采样生成闭环仿真序列。",
-        "4. 对比算法：PID、Fuzzy-PID、MA-GC、RL-GC、A-GC（本文算法）。",
+        f"4. 对比算法：PID、Fuzzy-PID、MA-GC、RL-GC、A-GC（本文算法），其中基线方法设定为 {CONTROLLER_LABELS[BASELINE_CONTROLLER]}。",
         "5. 评价指标：稳态误差、调节时间、涂层均匀度、感知误差能量、控制平滑度、超调量，并进一步计算综合得分。",
         "   其中调节时间定义为：系统进入各恢复阶段后，膜厚误差首次回到容差带内所需的平均时间。",
         f"6. 当前最优方法：{best_row['controller_label']}，综合得分 {best_row['composite_score']:.2f}。",
         "7. 本次结果已额外导出五种控制算法的涂层厚度动态响应曲线图及对应统计 CSV，可直接用于第四章结果分析。",
         "",
-        "## 扰动阶段设置",
+        "## 相对 PID 基线的改进",
         "",
     ]
+    if baseline_row is not None and improvements:
+        lines.extend(
+            [
+                f"- 基线方法：{baseline_row['controller_label']}。",
+                (
+                    f"- 相较于 PID 基线，A-GC 在稳态误差上降低 {improvements['steady_state_error_um']:.2f}%，"
+                    f"调节时间缩短 {improvements['settling_time_s']:.2f}%，"
+                    f"涂层均匀度提高 {improvements['uniformity_percent']:.2f}%，"
+                    f"感知误差能量降低 {improvements['perception_error_energy']:.2f}%。"
+                ),
+            ]
+        )
+    lines.extend(
+        [
+            "",
+        "## 扰动阶段设置",
+        "",
+        ]
+    )
     for phase in phase_specs:
         lines.append(f"- {phase.name}：严重度 `{phase.severity}`，长度 {phase.count} 个控制周期，阶段类型 `{phase.kind}`。")
     path.write_text("\n".join(lines), encoding="utf-8")
@@ -1136,6 +1190,8 @@ def main() -> None:
             )
 
     summary_rows, std_lookup = _aggregate_summary(trial_rows, config["scoring"])
+    best_row = _find_best_row(summary_rows)
+    baseline_improvements = _build_baseline_improvements(summary_rows)
     response_rows = _build_dynamic_response_rows(cycle_rows, float(config["simulation"]["cycle_time_s"]))
     _write_summary_csv(summary_rows, paper_dir / "Table4-1_五种控制算法性能对比表.csv")
     _write_summary_markdown(summary_rows, paper_dir / "Table4-1_五种控制算法性能对比表_zh.md")
@@ -1156,6 +1212,10 @@ def main() -> None:
         {
             "source_summary": library_summary,
             "phase_specs": [phase.__dict__ for phase in phase_specs],
+            "baseline_controller": BASELINE_CONTROLLER,
+            "best_controller": best_row["controller"],
+            "best_controller_label": best_row["controller_label"],
+            "baseline_improvements": baseline_improvements,
             "summary_rows": [
                 {
                     key: value
@@ -1181,4 +1241,4 @@ def main() -> None:
         print("同步输出目录:")
         for root in thesis_roots:
             print(f"- {root}")
-    print(f"最优方法: {summary_rows[0]['controller_label']} | 综合得分={summary_rows[0]['composite_score']:.2f}")
+    print(f"最优方法: {best_row['controller_label']} | 综合得分={best_row['composite_score']:.2f}")

@@ -81,11 +81,11 @@ sequence_plan:
 
 controllers:
   PID:
-    kp: 0.58
-    ki: 0.06
-    kd: 0.18
+    kp: 0.52
+    ki: 0.05
+    kd: 0.14
     integral_limit: 2.40
-    max_effort: 0.95
+    max_effort: 0.90
     spatial_gain: 0.10
   Fuzzy-PID:
     kp: 0.50
@@ -122,7 +122,7 @@ controllers:
     defect_ratio_gain: 3.40
     score_gap_gain: 0.24
     max_effort: 0.92
-    spatial_gain: 0.22
+    spatial_gain: 0.18
     severity_gain:
       normal: 0.18
       slight: 0.95
