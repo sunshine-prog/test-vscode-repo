@@ -18,7 +18,7 @@ visual_error:
 simulation:
   num_trials: 10
   cycle_time_s: 0.40
-  target_thickness_um: 12.0
+  target_thickness_um: 10.0
   settle_band_um: 0.65
   base_parameters:
     flow_g_per_15s: 50.0
@@ -32,6 +32,13 @@ simulation:
     flow_g_per_15s: 4.2
     pressure_mpa: 0.036
     spray_angle_deg: 16.0
+
+response_benchmark:
+  duration_s: 12.0
+  dt_s: 0.20
+  initial_thickness_um: 7.0
+  disturbance_bump_time_s: 5.2
+  disturbance_bump_scale: 0.035
 
 plant:
   thickness_limits_um: [5.0, 20.0]
