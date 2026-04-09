@@ -10,7 +10,7 @@ from typing import Any
 
 import matplotlib.pyplot as plt
 import numpy as np
-from sklearn.metrics import roc_curve
+from sklearn.metrics import roc_auc_score, roc_curve
 from scipy.interpolate import PchipInterpolator
 
 from spray_defect.config import ensure_dir, load_yaml, save_csv, save_json

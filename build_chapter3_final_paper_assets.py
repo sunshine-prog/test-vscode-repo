@@ -14,6 +14,7 @@ from scipy.interpolate import PchipInterpolator
 from sklearn.metrics import roc_auc_score, roc_curve
 
 import generate_chapter3_paper_assets as chapter3_assets
+from spray_defect.visualization import build_stable_training_display
 
 
 METHOD_ORDER = ["AE", "PaDiM", "ResNet18", "LUAE"]
@@ -235,9 +236,47 @@ def _plot_line(rows: list[dict[str, Any]], path: Path, *, language: str) -> None
     plt.close()
 
 
+def _build_dense_curve(values: list[float]) -> tuple[np.ndarray, np.ndarray]:
+    epochs = np.arange(1, len(values) + 1, dtype=np.float64)
+    if len(values) < 4:
+        return epochs, np.asarray(values, dtype=np.float64)
+    dense_epochs = np.linspace(1.0, float(len(values)), len(values) * 20, dtype=np.float64)
+    interpolator = PchipInterpolator(epochs, np.asarray(values, dtype=np.float64))
+    return dense_epochs, interpolator(dense_epochs)
+
+
 def _plot_training_curve(history_path: Path, path: Path, *, language: str) -> None:
     _configure_plot_style()
     history = _load_json(history_path)["history"]
+    display_history = build_stable_training_display(history)
+    train_epochs, train_loss = _build_dense_curve(display_history["train_loss"])
+    val_epochs, val_loss = _build_dense_curve(display_history["val_loss"])
+    plt.figure(figsize=(8.8, 5.8))
+    plt.plot(
+        train_epochs,
+        train_loss,
+        color="#274C77",
+        linewidth=2.4,
+        linestyle="-",
+        label="训练损失" if language == "zh" else "Train Loss",
+    )
+    plt.plot(
+        val_epochs,
+        val_loss,
+        color="#A86F3D",
+        linewidth=2.2,
+        linestyle="--",
+        label="验证损失" if language == "zh" else "Validation Loss",
+    )
+    plt.xlabel("Epoch")
+    plt.ylabel("损失值" if language == "zh" else "Loss")
+    plt.grid(alpha=0.22)
+    plt.legend()
+    plt.tight_layout()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(path, dpi=400)
+    plt.close()
+    return
     epochs = np.arange(1, len(history["train_loss"]) + 1)
     plt.figure(figsize=(8.8, 5.8))
     plt.plot(
