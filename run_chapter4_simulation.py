@@ -21,6 +21,7 @@ from spray_defect.control import AdaptiveGainController, SprayProcessSimulator
 from spray_defect.data_v2 import build_dataloaders_v2
 from spray_defect.models import LightweightUNetAutoEncoder
 from spray_defect.visualization import save_control_curves
+from spray_defect.chapter4_pipeline import main as benchmark_main
 
 
 def _load_model(chapter3_config: dict[str, Any], checkpoint_path: str | Path, device: torch.device) -> tuple[LightweightUNetAutoEncoder, float]:
@@ -225,4 +226,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    benchmark_main()

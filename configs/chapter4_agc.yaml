@@ -1,15 +1,27 @@
 seed: 42
 
 paths:
-  chapter3_config: D:/pythonProject2/configs/chapter3_luae.yaml
-  chapter3_checkpoint: D:/pythonProject2/outputs/chapter3/checkpoints/best_model.pt
-  output_root: D:/pythonProject2/outputs/chapter4
+  chapter3_prediction_candidates:
+    - D:/pythonProject2/outputs/chapter3_full_repro_20260408/chapter3_repro/metrics/test_predictions.csv
+    - D:/pythonProject2/outputs/chapter3_repro/metrics/test_predictions.csv
+    - D:/pythonProject2/outputs/00_论文总目录_最终版/01_用户训练结果/第三章_LUAE/chapter3_repro/metrics/test_predictions.csv
+  output_root: D:/pythonProject2/outputs/chapter4_full_repro_20260409
+  thesis_output_roots:
+    - D:/pythonProject2/outputs/00_论文总目录_最终版/04_第四章输出/99_最终投稿版
+    - D:/pythonProject2/outputs/chapter3_full_repro_20260408/00_论文总目录_最终版/04_第四章输出/99_最终投稿版
 
-controller:
-  ema_alpha: 0.72
-  integral_limit: 3.0
-  adaptive_rate: 0.35
-  derivative_rate: 0.20
+visual_error:
+  residual_weight: 0.60
+  anomaly_gap_weight: 0.25
+  defect_ratio_weight: 0.15
+
+simulation:
+  num_trials: 10
+  cycle_time_s: 0.40
+  target_thickness_um: 12.0
+  settle_band_um: 0.65
+  settle_error_band: 0.065
+  settle_window: 4
   base_parameters:
     flow_g_per_15s: 50.0
     pressure_mpa: 0.32
@@ -19,34 +31,108 @@ controller:
     pressure_mpa: [0.24, 0.42]
     spray_angle_deg: [60.0, 120.0]
   command_scales:
-    flow: 30.0
-    pressure: 0.06
-    angle: 35.0
-  severity_gain:
-    normal: 0.0
-    slight: 1.0
-    medium: 1.25
-    severe: 1.60
-  severity_bias:
-    slight:
-      flow: 2.0
-      pressure: 0.005
-      angle: 6.0
-    medium:
-      flow: 3.5
-      pressure: 0.010
-      angle: 10.0
-    severe:
-      flow: 5.0
-      pressure: 0.015
-      angle: 15.0
+    flow_g_per_15s: 4.2
+    pressure_mpa: 0.036
+    spray_angle_deg: 16.0
 
 plant:
-  dt: 0.10
-  gain: 0.85
-  time_constant: 0.65
-  target_thickness: 1.0
-  disturbance_scale: 0.08
+  thickness_limits_um: [5.0, 20.0]
+  inertia: 0.78
+  control_gain: 1.18
+  disturbance_gain: 1.34
+  coupling_gain: 0.24
+  balance_decay: 0.74
+  balance_disturbance_gain: 1.08
+  balance_control_gain: 1.12
+  thickness_noise_um: 0.08
+  balance_noise: 0.015
+  measurement_noise: 0.006
+  residual_noise: 0.004
 
-simulation:
-  max_samples: null
+sequence_plan:
+  - name: 基线稳定段
+    severity: normal
+    count: 10
+    kind: baseline
+  - name: 轻扰动段
+    severity: slight
+    count: 8
+    kind: disturbance
+  - name: 轻扰动恢复段
+    severity: normal
+    count: 6
+    kind: recovery
+  - name: 中扰动段
+    severity: medium
+    count: 10
+    kind: disturbance
+  - name: 中扰动恢复段
+    severity: normal
+    count: 6
+    kind: recovery
+  - name: 重扰动段
+    severity: severe
+    count: 6
+    kind: disturbance
+  - name: 重扰动恢复段
+    severity: normal
+    count: 10
+    kind: recovery
+
+controllers:
+  PID:
+    kp: 0.58
+    ki: 0.06
+    kd: 0.18
+    integral_limit: 2.40
+    max_effort: 0.95
+    spatial_gain: 0.10
+  Fuzzy-PID:
+    kp: 0.50
+    ki: 0.05
+    kd: 0.16
+    integral_limit: 2.20
+    max_effort: 1.00
+    high_error: 0.16
+    low_error: 0.08
+    gain_boost: 0.40
+    gain_drop: 0.16
+    spatial_gain: 0.16
+  MA-GC:
+    gain: 0.82
+    derivative_gain: 0.10
+    window: 5
+    max_effort: 0.88
+    spatial_gain: 0.08
+  RL-GC:
+    init_gain: 0.76
+    gain_limits: [0.45, 1.35]
+    learning_rate: 0.10
+    exploration_scale: 0.18
+    exploration_decay: 0.93
+    max_effort: 1.05
+    spatial_gain: 0.15
+  A-GC:
+    ema_alpha: 0.70
+    kp: 0.86
+    ki: 0.07
+    kd: 0.22
+    integral_limit: 2.80
+    adaptive_rate: 0.42
+    defect_ratio_gain: 3.40
+    score_gap_gain: 0.24
+    max_effort: 0.92
+    spatial_gain: 0.22
+    severity_gain:
+      normal: 0.18
+      slight: 0.95
+      medium: 1.08
+      severe: 1.28
+
+scoring:
+  weights:
+    steady_state_error_um: 0.28
+    settling_time_s: 0.12
+    uniformity_percent: 0.22
+    perception_error_energy: 0.23
+    control_smoothness: 0.15
