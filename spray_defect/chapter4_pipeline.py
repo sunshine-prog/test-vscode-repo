@@ -35,14 +35,28 @@ CONTROLLER_COLORS = {
     "RL-GC": "#9C6644",
     "A-GC": "#274C77",
 }
+CONTROLLER_HATCHES = {
+    "PID": "",
+    "Fuzzy-PID": "///",
+    "MA-GC": "---",
+    "RL-GC": "...",
+    "A-GC": "++",
+}
+CONTROLLER_LINESTYLES = {
+    "PID": ":",
+    "Fuzzy-PID": "--",
+    "MA-GC": "-.",
+    "RL-GC": (0, (5, 1.6)),
+    "A-GC": "-",
+}
 
 METRIC_SPECS = [
-    ("steady_state_error_um", "稳态误差 |ess| (μm)", "lower"),
-    ("settling_time_s", "调节时间 ts (s)", "lower"),
-    ("uniformity_percent", "涂层均匀度 Uc (%)", "higher"),
-    ("perception_error_energy", "感知误差能量 Ep", "lower"),
-    ("control_smoothness", "控制平滑度 Su", "lower"),
-    ("overshoot_percent", "超调量 Mp (%)", "lower"),
+    ("steady_state_error_um", "稳态误差 e_ss (μm)", "lower"),
+    ("settling_time_s", "调节时间 t_s (s)", "lower"),
+    ("uniformity_percent", "涂层均匀度 U_h (%)", "higher"),
+    ("perception_error_energy", "残差误差能量 E_r (-)", "lower"),
+    ("control_smoothness", "控制平滑度 S_u (-)", "lower"),
+    ("overshoot_percent", "超调量 M_p (%)", "lower"),
 ]
 
 SCORE_METRICS = [metric_key for metric_key, _, _ in METRIC_SPECS if metric_key != "overshoot_percent"]
@@ -855,12 +869,12 @@ def _write_summary_csv(summary_rows: list[dict[str, Any]], path: Path) -> None:
         rows.append(
             {
                 "控制算法": row["controller_label"],
-                "稳态误差 |ess| (μm)": f"{row['steady_state_error_um']:.4f}",
-                "调节时间 ts (s)": f"{row['settling_time_s']:.4f}",
-                "涂层均匀度 Uc (%)": f"{row['uniformity_percent']:.2f}",
-                "感知误差能量 Ep": f"{row['perception_error_energy']:.4f}",
-                "控制平滑度 Su": f"{row['control_smoothness']:.4f}",
-                "超调量 Mp (%)": f"{row['overshoot_percent']:.2f}",
+                "稳态误差 e_ss (μm)": f"{row['steady_state_error_um']:.4f}",
+                "调节时间 t_s (s)": f"{row['settling_time_s']:.4f}",
+                "涂层均匀度 U_h (%)": f"{row['uniformity_percent']:.2f}",
+                "残差误差能量 E_r (-)": f"{row['perception_error_energy']:.4f}",
+                "控制平滑度 S_u (-)": f"{row['control_smoothness']:.4f}",
+                "超调量 M_p (%)": f"{row['overshoot_percent']:.2f}",
                 "综合得分": f"{row['composite_score']:.2f}",
             }
         )
@@ -870,12 +884,12 @@ def _write_summary_csv(summary_rows: list[dict[str, Any]], path: Path) -> None:
 def _write_summary_markdown(summary_rows: list[dict[str, Any]], path: Path) -> None:
     headers = [
         "控制算法",
-        "稳态误差 |ess| (μm)↓",
-        "调节时间 ts (s)↓",
-        "涂层均匀度 Uc (%)↑",
-        "感知误差能量 Ep↓",
-        "控制平滑度 Su↓",
-        "超调量 Mp (%)↓",
+        "稳态误差 e_ss (μm)↓",
+        "调节时间 t_s (s)↓",
+        "涂层均匀度 U_h (%)↑",
+        "残差误差能量 E_r (-)↓",
+        "控制平滑度 S_u (-)↓",
+        "超调量 M_p (%)↓",
         "综合得分↑",
     ]
     best_values = {}
@@ -920,11 +934,11 @@ def _plot_metric_panels(summary_rows: list[dict[str, Any]], path: Path) -> None:
         labels = [row["controller_label"] for row in summary_rows]
         colors = [CONTROLLER_COLORS[row["controller"]] for row in summary_rows]
         bars = axis.bar(labels, values, color=colors, edgecolor="#2B2B2B", linewidth=0.6)
-        axis.set_title(metric_label)
+        for bar, row in zip(bars, summary_rows, strict=True):
+            bar.set_hatch(CONTROLLER_HATCHES[row["controller"]])
+        axis.set_title(f"{metric_label}（{'越低越优' if direction == 'lower' else '越高越优'}）", fontsize=11, fontweight="bold")
         axis.grid(axis="y", alpha=0.22)
         axis.tick_params(axis="x", rotation=18)
-        note = "越高越优" if direction == "higher" else "越低越优"
-        axis.text(0.98, 0.95, note, transform=axis.transAxes, ha="right", va="top", fontsize=9, color="#333333")
 
         upper = max(values) if values else 1.0
         axis.set_ylim(0.0, upper * 1.18 + 1e-6)
@@ -944,7 +958,7 @@ def _plot_metric_panels(summary_rows: list[dict[str, Any]], path: Path) -> None:
                 tick_label.set_fontweight("bold")
                 tick_label.set_color("#274C77")
 
-    plt.suptitle("五种控制算法关键性能指标对比", y=0.98, fontsize=15)
+    plt.suptitle("不同控制算法的涂层厚度控制性能指标对比", y=0.98, fontsize=15)
     plt.tight_layout(rect=(0.0, 0.0, 1.0, 0.96))
     path.parent.mkdir(parents=True, exist_ok=True)
     plt.savefig(path, dpi=400)
@@ -976,6 +990,7 @@ def _plot_radar(summary_rows: list[dict[str, Any]], path: Path) -> None:
             angles,
             radar_scores,
             color=CONTROLLER_COLORS[row["controller"]],
+            linestyle=CONTROLLER_LINESTYLES.get(row["controller"], "-"),
             linewidth=2.8 if row["controller"] == "A-GC" else 2.0,
             label=row["controller_label"],
         )
@@ -986,7 +1001,7 @@ def _plot_radar(summary_rows: list[dict[str, Any]], path: Path) -> None:
             alpha=0.18 if row["controller"] == "A-GC" else 0.10,
         )
 
-    axis.set_title("五种控制算法综合性能雷达图", pad=24, fontsize=15)
+    axis.set_title("不同控制算法的综合性能雷达图", pad=24, fontsize=15, fontweight="bold")
     axis.legend(loc="upper right", bbox_to_anchor=(1.25, 1.10))
     path.parent.mkdir(parents=True, exist_ok=True)
     plt.tight_layout()
@@ -1059,6 +1074,7 @@ def _plot_dynamic_response(response_rows: list[dict[str, Any]], path: Path) -> N
             times,
             mean_values,
             color=CONTROLLER_COLORS[controller_name],
+            linestyle=CONTROLLER_LINESTYLES.get(controller_name, "-"),
             linewidth=2.8 if controller_name == "A-GC" else 2.1,
             label=CONTROLLER_LABELS[controller_name],
             zorder=3 if controller_name == "A-GC" else 2,
@@ -1073,7 +1089,7 @@ def _plot_dynamic_response(response_rows: list[dict[str, Any]], path: Path) -> N
 
     plt.xlabel("时间 (s)")
     plt.ylabel("涂层厚度 (μm)")
-    plt.title("五种控制算法涂层厚度动态响应曲线")
+    plt.title("不同控制算法的涂层厚度动态响应曲线", fontsize=15, fontweight="bold")
     plt.grid(alpha=0.22)
     plt.legend(ncol=3)
     plt.tight_layout()
@@ -1101,7 +1117,9 @@ def _plot_publication_style_comparison(summary_rows: list[dict[str, Any]], path:
 
         colors = [CONTROLLER_COLORS[name] for name in CONTROLLER_ORDER]
         bars = axis.barh(y_positions, values, color=colors, edgecolor="#2B2B2B", linewidth=0.6, height=0.62)
-        axis.set_title(metric_label, loc="left", fontsize=11, fontweight="bold")
+        for bar, controller_name in zip(bars, CONTROLLER_ORDER, strict=True):
+            bar.set_hatch(CONTROLLER_HATCHES[controller_name])
+        axis.set_title(f"{metric_label}（{'越低越优' if direction == 'lower' else '越高越优'}）", loc="left", fontsize=11, fontweight="bold")
         axis.set_yticks(y_positions)
         axis.set_yticklabels(labels)
         axis.grid(axis="x", alpha=0.18)
@@ -1109,8 +1127,6 @@ def _plot_publication_style_comparison(summary_rows: list[dict[str, Any]], path:
 
         x_max = max(values) if values else 1.0
         axis.set_xlim(0.0, x_max * 1.25 + 1e-6)
-        note = "越高越优" if direction == "higher" else "越低越优"
-        axis.text(0.99, 0.92, note, transform=axis.transAxes, ha="right", va="top", fontsize=9, color="#4A4A4A")
 
         for bar, controller_name, value in zip(bars, CONTROLLER_ORDER, values, strict=True):
             label = f"{value:.2f}" if metric_key in {"uniformity_percent", "overshoot_percent"} else f"{value:.4f}"
@@ -1152,7 +1168,7 @@ def _plot_publication_style_comparison(summary_rows: list[dict[str, Any]], path:
                 },
             )
 
-    figure.suptitle("五种控制算法性能指标对比图", fontsize=16, y=0.995)
+    figure.suptitle("不同控制算法的涂层厚度控制性能指标对比", fontsize=16, y=0.995)
     if best_row is not None:
         figure.text(
             0.985,

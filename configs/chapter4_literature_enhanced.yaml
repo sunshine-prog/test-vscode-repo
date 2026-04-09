@@ -40,6 +40,16 @@ response_benchmark:
   disturbance_bump_time_s: 5.2
   disturbance_bump_scale: 0.035
 
+disturbance_benchmark:
+  duration_s: 10.0
+  dt_s: 0.20
+  disturbance_time_s: 3.0
+  thickness_drop_um: 0.9
+  residual_pulse_peak: 0.22
+  residual_decay_rate: 0.85
+  spatial_offset_peak: 0.18
+  recovery_band_um: 0.20
+
 plant:
   thickness_limits_um: [5.0, 20.0]
   inertia: 0.78

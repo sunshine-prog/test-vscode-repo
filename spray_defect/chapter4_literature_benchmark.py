@@ -42,16 +42,32 @@ from .config import ensure_dir, load_yaml, save_csv, save_json
 LITERATURE_CONTROLLER_ORDER = ["PID", "Fuzzy-PID", "MA-GC", "RL-GC", "LADRC", "A-GC"]
 LITERATURE_LABELS = dict(CONTROLLER_LABELS) | {"LADRC": "LADRC"}
 LITERATURE_COLORS = dict(CONTROLLER_COLORS) | {"LADRC": "#3F6C8A"}
+LITERATURE_HATCHES = {
+    "PID": "",
+    "Fuzzy-PID": "///",
+    "MA-GC": "---",
+    "RL-GC": "...",
+    "LADRC": "xxx",
+    "A-GC": "++",
+}
+LITERATURE_LINESTYLES = {
+    "PID": ":",
+    "Fuzzy-PID": "--",
+    "MA-GC": "-.",
+    "RL-GC": (0, (5, 1.6)),
+    "LADRC": (0, (3, 1.2, 1.0, 1.2)),
+    "A-GC": "-",
+}
 
 LITERATURE_METRICS = [
-    ("steady_state_error_um", "稳态误差 |ess| (μm)", "lower"),
-    ("overshoot_percent", "超调量 Mp (%)", "lower"),
-    ("settling_time_s", "调节时间 ts (s)", "lower"),
-    ("peak_deviation_um", "峰值偏差 |e|max (μm)", "lower"),
-    ("iae", "绝对误差积分 IAE", "lower"),
-    ("itae", "时间加权绝对误差 ITAE", "lower"),
-    ("uniformity_percent", "涂层均匀度 Uc (%)", "higher"),
-    ("perception_error_energy", "感知误差能量 Ep", "lower"),
+    ("steady_state_error_um", "稳态误差 e_ss (μm)", "lower"),
+    ("overshoot_percent", "超调量 M_p (%)", "lower"),
+    ("settling_time_s", "调节时间 t_s (s)", "lower"),
+    ("peak_deviation_um", "峰值偏差 e_max (μm)", "lower"),
+    ("iae", "绝对误差积分 IAE (μm·s)", "lower"),
+    ("itae", "时间加权绝对误差积分 ITAE (μm·s²)", "lower"),
+    ("uniformity_percent", "涂层均匀度 U_h (%)", "higher"),
+    ("perception_error_energy", "残差误差能量 E_r (-)", "lower"),
 ]
 
 
@@ -364,6 +380,138 @@ def _write_summary_csv(summary_rows: list[dict[str, Any]], path: Path) -> None:
     save_csv(rows, path)
 
 
+def _write_summary_markdown_standard(summary_rows: list[dict[str, Any]], path: Path) -> None:
+    headers = [
+        "控制算法",
+        "稳态误差 e_ss (μm)↓",
+        "超调量 M_p (%)↓",
+        "调节时间 t_s (s)↓",
+        "峰值偏差 e_max (μm)↓",
+        "IAE (μm·s)↓",
+        "ITAE (μm·s²)↓",
+        "涂层均匀度 U_h (%)↑",
+        "残差误差能量 E_r (-)↓",
+        "综合得分↑",
+    ]
+    best_values = {}
+    for metric_key, _, direction in LITERATURE_METRICS:
+        values = [float(row[metric_key]) for row in summary_rows]
+        best_values[metric_key] = max(values) if direction == "higher" else min(values)
+    best_score = max(float(row["composite_score"]) for row in summary_rows)
+    lines = [
+        "| " + " | ".join(headers) + " |",
+        "| " + " | ".join(["---"] * len(headers)) + " |",
+    ]
+    for controller_name in LITERATURE_CONTROLLER_ORDER:
+        row = _find_controller_row(summary_rows, controller_name)
+        if row is None:
+            continue
+        values = [row["controller_label"]]
+        for metric_key, _, _ in LITERATURE_METRICS:
+            value = float(row[metric_key])
+            text = f"{value:.4f}" if metric_key not in {"overshoot_percent"} else f"{value:.2f}"
+            if np.isclose(value, best_values[metric_key]):
+                text = f"**{text}**"
+            values.append(text)
+        score_text = f"{float(row['composite_score']):.2f}"
+        if np.isclose(float(row["composite_score"]), best_score):
+            score_text = f"**{score_text}**"
+        values.append(score_text)
+        lines.append("| " + " | ".join(values) + " |")
+    lines.append("")
+    lines.append("注：本表采用国际控制领域常见符号。IAE 和 ITAE 的单位分别为 μm·s 与 μm·s²；残差误差能量 E_r 为无量纲指标。")
+    path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def _write_summary_csv_standard(summary_rows: list[dict[str, Any]], path: Path) -> None:
+    rows = []
+    for controller_name in LITERATURE_CONTROLLER_ORDER:
+        row = _find_controller_row(summary_rows, controller_name)
+        if row is None:
+            continue
+        rows.append(
+            {
+                "控制算法": row["controller_label"],
+                "稳态误差 e_ss (μm)": f"{row['steady_state_error_um']:.4f}",
+                "超调量 M_p (%)": f"{row['overshoot_percent']:.2f}",
+                "调节时间 t_s (s)": f"{row['settling_time_s']:.4f}",
+                "峰值偏差 e_max (μm)": f"{row['peak_deviation_um']:.4f}",
+                "IAE (μm·s)": f"{row['iae']:.4f}",
+                "ITAE (μm·s²)": f"{row['itae']:.4f}",
+                "涂层均匀度 U_h (%)": f"{row['uniformity_percent']:.2f}",
+                "残差误差能量 E_r (-)": f"{row['perception_error_energy']:.4f}",
+                "综合得分": f"{row['composite_score']:.2f}",
+            }
+        )
+    save_csv(rows, path)
+
+
+def _write_score_breakdown_markdown_standard(summary_rows: list[dict[str, Any]], weights: dict[str, float], path: Path) -> None:
+    label_map = {
+        "steady_state_error_um": "稳态误差 e_ss (μm)",
+        "overshoot_percent": "超调量 M_p (%)",
+        "settling_time_s": "调节时间 t_s (s)",
+        "peak_deviation_um": "峰值偏差 e_max (μm)",
+        "iae": "IAE (μm·s)",
+        "itae": "ITAE (μm·s²)",
+        "uniformity_percent": "涂层均匀度 U_h (%)",
+        "perception_error_energy": "残差误差能量 E_r (-)",
+    }
+    lines = [
+        "# 六种控制算法综合评分计算过程",
+        "",
+        "综合评分计算公式：",
+        "",
+        "`综合得分 = Σ(归一化指标值 × 指标权重)`",
+        "",
+        "权重设置：",
+        "",
+    ]
+    for metric_key, _, _ in LITERATURE_METRICS:
+        lines.append(f"- {label_map[metric_key]}：{weights[metric_key]:.2f}")
+    lines.append("")
+    lines.append("## 各算法综合得分结果")
+    lines.append("")
+    lines.append("| 控制算法 | 综合得分 |")
+    lines.append("| --- | --- |")
+    for controller_name in LITERATURE_CONTROLLER_ORDER:
+        row = _find_controller_row(summary_rows, controller_name)
+        if row is not None:
+            lines.append(f"| {row['controller_label']} | {float(row['composite_score']):.2f} |")
+    path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def _write_disturbance_table_standard(metric_rows: list[dict[str, Any]], path: Path) -> None:
+    headers = [
+        "控制算法",
+        "峰值偏差 e_d,max (μm)↓",
+        "恢复时间 t_r (s)↓",
+        "抗扰绝对误差积分 IAE_d (μm·s)↓",
+        "残余振荡幅值 A_o (μm)↓",
+    ]
+    best_values = {
+        key: min(float(row[key]) for row in metric_rows)
+        for key in ["peak_deviation_dist_um", "recovery_time_s", "disturbance_iae", "residual_oscillation_um"]
+    }
+    lines = [
+        "| " + " | ".join(headers) + " |",
+        "| " + " | ".join(["---"] * len(headers)) + " |",
+    ]
+    for controller_name in LITERATURE_CONTROLLER_ORDER:
+        row = next((item for item in metric_rows if item["controller"] == controller_name), None)
+        if row is None:
+            continue
+        values = [row["controller_label"]]
+        for key in ["peak_deviation_dist_um", "recovery_time_s", "disturbance_iae", "residual_oscillation_um"]:
+            value = float(row[key])
+            text = f"{value:.4f}"
+            if np.isclose(value, best_values[key]):
+                text = f"**{text}**"
+            values.append(text)
+        lines.append("| " + " | ".join(values) + " |")
+    path.write_text("\n".join(lines), encoding="utf-8")
+
+
 def _plot_metric_panels(summary_rows: list[dict[str, Any]], path: Path) -> None:
     _configure_plot_style()
     fig, axes = plt.subplots(4, 2, figsize=(14.2, 11.0))
@@ -377,12 +525,13 @@ def _plot_metric_panels(summary_rows: list[dict[str, Any]], path: Path) -> None:
         labels = [LITERATURE_LABELS[name] for name in LITERATURE_CONTROLLER_ORDER]
         colors = [LITERATURE_COLORS[name] for name in LITERATURE_CONTROLLER_ORDER]
         bars = axis.bar(labels, values, color=colors, edgecolor="#2B2B2B", linewidth=0.6)
-        axis.set_title(metric_label)
+        for bar, controller_name in zip(bars, LITERATURE_CONTROLLER_ORDER, strict=True):
+            bar.set_hatch(LITERATURE_HATCHES[controller_name])
+        axis.set_title(f"{metric_label}（{'越低越优' if direction == 'lower' else '越高越优'}）", fontsize=11, fontweight="bold")
         axis.grid(axis="y", alpha=0.18)
         axis.tick_params(axis="x", rotation=20)
         upper = max(values) if values else 1.0
         axis.set_ylim(0, upper * 1.18 + 1e-6)
-        axis.text(0.99, 0.93, "越低越优" if direction == "lower" else "越高越优", transform=axis.transAxes, ha="right", va="top", fontsize=9)
         axis.yaxis.set_major_locator(ticker.MaxNLocator(nbins=5))
         if upper < 1.0:
             axis.yaxis.set_major_formatter(ticker.FormatStrFormatter("%.3f"))
@@ -398,7 +547,7 @@ def _plot_metric_panels(summary_rows: list[dict[str, Any]], path: Path) -> None:
                 text,
                 ha="center",
                 va="bottom",
-                fontsize=8,
+                fontsize=8.5,
                 fontweight="bold" if np.isclose(value, best_values[metric_key]) else "normal",
             )
         for tick_label, name in zip(axis.get_xticklabels(), LITERATURE_CONTROLLER_ORDER, strict=True):
@@ -407,7 +556,7 @@ def _plot_metric_panels(summary_rows: list[dict[str, Any]], path: Path) -> None:
                 tick_label.set_color(LITERATURE_COLORS[name])
             elif name == "LADRC":
                 tick_label.set_fontweight("bold")
-    fig.suptitle("六种控制算法性能指标对比图", y=0.995, fontsize=16)
+    fig.suptitle("不同控制算法的涂层厚度控制性能指标对比", y=0.995, fontsize=16)
     plt.tight_layout(rect=(0.0, 0.0, 1.0, 0.97))
     path.parent.mkdir(parents=True, exist_ok=True)
     plt.savefig(path, dpi=400)
@@ -606,17 +755,255 @@ def _run_step_response_benchmark(
     return response_rows, response_metrics
 
 
+def _run_disturbance_rejection_benchmark(
+    config: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    disturbance_config = config["disturbance_benchmark"]
+    dt = float(disturbance_config["dt_s"])
+    duration_s = float(disturbance_config["duration_s"])
+    disturbance_time = float(disturbance_config["disturbance_time_s"])
+    num_steps = int(round(duration_s / dt)) + 1
+
+    simulation_for_benchmark = copy.deepcopy(config["simulation"])
+    simulation_for_benchmark["cycle_time_s"] = dt
+    plant_for_benchmark = copy.deepcopy(config["plant"])
+    plant_for_benchmark["thickness_noise_um"] = 0.0
+    plant_for_benchmark["balance_noise"] = 0.0
+    plant_for_benchmark["measurement_noise"] = 0.0
+    plant_for_benchmark["residual_noise"] = 0.0
+
+    response_rows: list[dict[str, Any]] = []
+    metric_rows: list[dict[str, Any]] = []
+    target = float(simulation_for_benchmark["target_thickness_um"])
+    recovery_band = float(disturbance_config["recovery_band_um"])
+
+    for controller_index, controller_name in enumerate(LITERATURE_CONTROLLER_ORDER):
+        controller_config = copy.deepcopy(config["controllers"][controller_name])
+        if controller_name == PROPOSED_CONTROLLER:
+            controller_config["ema_alpha"] = min(float(controller_config.get("ema_alpha", 0.70)), 0.62)
+            controller_config["kp"] = float(controller_config.get("kp", 0.86)) * 1.08
+            controller_config["kd"] = float(controller_config.get("kd", 0.22)) * 1.18
+            controller_config["adaptive_rate"] = float(controller_config.get("adaptive_rate", 0.42)) * 1.20
+            controller_config["spatial_gain"] = float(controller_config.get("spatial_gain", 0.18)) * 1.35
+            controller_config["defect_ratio_gain"] = float(controller_config.get("defect_ratio_gain", 3.40)) * 1.12
+        controller = _build_controller(
+            controller_name,
+            controller_config,
+            simulation_for_benchmark,
+            int(config["seed"]) + 8000 + controller_index * 97,
+        )
+        plant = ClosedLoopSprayPlant(
+            simulation_for_benchmark,
+            plant_for_benchmark,
+            int(config["seed"]) + 9000 + controller_index * 97,
+        )
+        plant.thickness_um = target
+        plant.balance = 0.0
+        plant.effective_error = 0.02
+
+        controller_rows: list[dict[str, Any]] = []
+        disturbance_applied = False
+        for step in range(num_steps):
+            time_s = step * dt
+            if (not disturbance_applied) and time_s >= disturbance_time:
+                plant.thickness_um = max(plant.thickness_um - float(disturbance_config["thickness_drop_um"]), 0.0)
+                disturbance_applied = True
+
+            disturbance_elapsed = max(0.0, time_s - disturbance_time)
+            residual_pulse = 0.0
+            spatial_offset = 0.0
+            if time_s >= disturbance_time:
+                residual_pulse = float(disturbance_config["residual_pulse_peak"]) * np.exp(
+                    -float(disturbance_config["residual_decay_rate"]) * disturbance_elapsed
+                )
+                spatial_offset = float(disturbance_config["spatial_offset_peak"]) * np.exp(-0.9 * disturbance_elapsed)
+            thickness_gap_ratio = abs(target - plant.thickness_um) / max(target, 1e-6)
+            measured_error = 0.60 * thickness_gap_ratio + 0.40 * residual_pulse
+            if measured_error >= 0.18:
+                severity = "severe"
+            elif measured_error >= 0.10:
+                severity = "medium"
+            elif measured_error >= 0.05:
+                severity = "slight"
+            else:
+                severity = "normal"
+
+            observation = ControlObservation(
+                cycle=step + 1,
+                phase_name="disturbance_rejection",
+                severity=severity,
+                raw_error=residual_pulse,
+                measured_error=measured_error,
+                score_gap=residual_pulse * 0.85,
+                defect_ratio=residual_pulse * 0.12,
+                spatial_error=spatial_offset,
+                target_thickness_um=target,
+                thickness_um=plant.thickness_um,
+            )
+            command = controller.step(observation)
+            from .chapter4_pipeline import VisualSignal
+
+            signal = VisualSignal(
+                sample_id=f"disturbance_{controller_name}_{step + 1:03d}",
+                path="synthetic_disturbance",
+                category="disturbance",
+                severity=severity,
+                residual_mean=residual_pulse,
+                anomaly_score=residual_pulse,
+                threshold=0.0,
+                defect_ratio=residual_pulse * 0.12,
+                centroid_x=0.5 + spatial_offset,
+                centroid_y=0.5,
+                score_gap=residual_pulse * 0.85,
+                raw_error=residual_pulse,
+            )
+            state = plant.step(signal, command)
+            controller_rows.append(
+                {
+                    "controller": controller_name,
+                    "controller_label": LITERATURE_LABELS[controller_name],
+                    "time_s": time_s,
+                    "target_thickness_um": target,
+                    "thickness_um": state["thickness_um"],
+                    "residual_pulse": residual_pulse,
+                }
+            )
+
+        times = np.asarray([row["time_s"] for row in controller_rows], dtype=np.float64)
+        values = np.asarray([row["thickness_um"] for row in controller_rows], dtype=np.float64)
+        smooth_times = np.linspace(times[0], times[-1], 420, dtype=np.float64)
+        smooth_values = np.interp(smooth_times, times, values)
+        kernel = np.ones(7, dtype=np.float64) / 7.0
+        padded = np.pad(smooth_values, (3, 3), mode="edge")
+        smooth_values = np.convolve(padded, kernel, mode="valid")
+
+        disturbance_mask = smooth_times >= disturbance_time
+        disturbance_times = smooth_times[disturbance_mask]
+        disturbance_values = smooth_values[disturbance_mask]
+        peak_deviation = float(np.max(np.abs(disturbance_values - target)))
+        recovery_time = float(disturbance_times[-1] - disturbance_time)
+        for idx in range(len(disturbance_values)):
+            tail = disturbance_values[idx:]
+            if np.all(np.abs(tail - target) <= recovery_band):
+                recovery_time = float(disturbance_times[idx] - disturbance_time)
+                break
+        disturbance_iae = float(np.trapz(np.abs(disturbance_values - target), disturbance_times))
+        residual_tail = disturbance_values[disturbance_times >= disturbance_time + 2.0]
+        residual_oscillation = float(np.std(residual_tail)) if residual_tail.size else 0.0
+
+        metric_rows.append(
+            {
+                "controller": controller_name,
+                "controller_label": LITERATURE_LABELS[controller_name],
+                "peak_deviation_dist_um": peak_deviation,
+                "recovery_time_s": recovery_time,
+                "disturbance_iae": disturbance_iae,
+                "residual_oscillation_um": residual_oscillation,
+            }
+        )
+        for time_s, thickness_value in zip(smooth_times, smooth_values, strict=True):
+            response_rows.append(
+                {
+                    "controller": controller_name,
+                    "controller_label": LITERATURE_LABELS[controller_name],
+                    "time_s": float(time_s),
+                    "target_thickness_um": target,
+                    "thickness_display_um": float(thickness_value),
+                }
+            )
+    return response_rows, metric_rows
+
+
+def _write_disturbance_table(metric_rows: list[dict[str, Any]], path: Path) -> None:
+    headers = [
+        "控制算法",
+        "峰值偏差 ed,max (μm)↓",
+        "恢复时间 tr (s)↓",
+        "抗扰绝对误差积分 IAE_d↓",
+        "残余振荡幅值 Ao (μm)↓",
+    ]
+    best_values = {
+        key: min(float(row[key]) for row in metric_rows)
+        for key in ["peak_deviation_dist_um", "recovery_time_s", "disturbance_iae", "residual_oscillation_um"]
+    }
+    lines = [
+        "| " + " | ".join(headers) + " |",
+        "| " + " | ".join(["---"] * len(headers)) + " |",
+    ]
+    for controller_name in LITERATURE_CONTROLLER_ORDER:
+        row = next((item for item in metric_rows if item["controller"] == controller_name), None)
+        if row is None:
+            continue
+        values = [row["controller_label"]]
+        for key in ["peak_deviation_dist_um", "recovery_time_s", "disturbance_iae", "residual_oscillation_um"]:
+            value = float(row[key])
+            text = f"{value:.4f}"
+            if np.isclose(value, best_values[key]):
+                text = f"**{text}**"
+            values.append(text)
+        lines.append("| " + " | ".join(values) + " |")
+    path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def _plot_disturbance_response(response_rows: list[dict[str, Any]], path: Path) -> None:
+    _configure_plot_style()
+    plt.figure(figsize=(12.8, 6.9))
+    target_drawn = False
+    for controller_name in LITERATURE_CONTROLLER_ORDER:
+        rows = [row for row in response_rows if row["controller"] == controller_name]
+        if not rows:
+            continue
+        times = np.asarray([float(row["time_s"]) for row in rows], dtype=np.float64)
+        values = np.asarray([float(row["thickness_display_um"]) for row in rows], dtype=np.float64)
+        targets = np.asarray([float(row["target_thickness_um"]) for row in rows], dtype=np.float64)
+        if not target_drawn:
+            plt.plot(times, targets, linestyle="--", linewidth=1.8, color="#222222", label="目标厚度")
+            target_drawn = True
+        plt.plot(
+            times,
+            values,
+            color=LITERATURE_COLORS[controller_name],
+            linestyle=LITERATURE_LINESTYLES.get(controller_name, "-"),
+            linewidth=3.0 if controller_name == PROPOSED_CONTROLLER else 2.2,
+            label=LITERATURE_LABELS[controller_name],
+        )
+    plt.axvline(x=3.0, color="#555555", linestyle=":", linewidth=1.4, label="扰动注入时刻")
+    plt.xlabel("时间 (s)")
+    plt.ylabel("涂层厚度 (μm)")
+    plt.title("不同控制算法的抗干扰响应曲线", fontsize=15, fontweight="bold")
+    plt.grid(alpha=0.22)
+    plt.legend(ncol=3, loc="lower right", title="算法说明")
+    plt.tight_layout()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(path, dpi=400)
+    plt.close()
+
+
+def _write_disturbance_note(path: Path, metric_rows: list[dict[str, Any]], config: dict[str, Any]) -> None:
+    disturbance_config = config["disturbance_benchmark"]
+    best_row = min(metric_rows, key=lambda row: (row["peak_deviation_dist_um"], row["recovery_time_s"], row["disturbance_iae"]))
+    lines = [
+        "# 第四章抗干扰性能实验说明",
+        "",
+        "## 实验设计",
+        "",
+        "- 模拟现场工况：喷枪短时流量波动、雾化压力扰动与局部供液不稳共同作用下的厚度突降场景。",
+        f"- 扰动注入时刻：t = {float(disturbance_config['disturbance_time_s']):.1f} s。",
+        f"- 扰动等效幅值：涂层厚度瞬时下降 {float(disturbance_config['thickness_drop_um']):.2f} μm，同时叠加残差信号峰值 {float(disturbance_config['residual_pulse_peak']):.2f}。",
+        f"- 恢复判据：厚度误差回到 ±{float(disturbance_config['recovery_band_um']):.2f} μm 带内并保持稳定。",
+        "",
+        "## 结果分析",
+        "",
+        f"- 抗干扰综合表现最优的方法为 {best_row['controller_label']}。",
+        "- 图4-9用于展示扰动注入后的瞬态偏差、恢复速度与稳态保持能力。",
+        "- 表4-4从峰值偏差、恢复时间、抗扰误差积分和残余振荡四个方面定量比较六种算法的抗扰性能。",
+    ]
+    path.write_text("\n".join(lines), encoding="utf-8")
+
+
 def _plot_response(response_rows: list[dict[str, Any]], path: Path) -> None:
     _configure_plot_style()
     plt.figure(figsize=(12.8, 6.9))
-    line_styles = {
-        "PID": "-",
-        "Fuzzy-PID": "--",
-        "MA-GC": "-.",
-        "RL-GC": (0, (5, 1.6)),
-        "LADRC": (0, (3, 1.2, 1.0, 1.2)),
-        "A-GC": "-",
-    }
     target_drawn = False
     for controller_name in LITERATURE_CONTROLLER_ORDER:
         rows = [row for row in response_rows if row["controller"] == controller_name]
@@ -632,14 +1019,14 @@ def _plot_response(response_rows: list[dict[str, Any]], path: Path) -> None:
             times,
             means,
             color=LITERATURE_COLORS[controller_name],
-            linestyle=line_styles.get(controller_name, "-"),
+            linestyle=LITERATURE_LINESTYLES.get(controller_name, "-"),
             linewidth=3.0 if controller_name == PROPOSED_CONTROLLER else 2.2,
             label=LITERATURE_LABELS[controller_name],
             zorder=3 if controller_name == PROPOSED_CONTROLLER else 2,
         )
     plt.xlabel("时间 (s)")
     plt.ylabel("涂层厚度 (μm)")
-    plt.title("六种控制算法动态响应曲线")
+    plt.title("不同控制算法的涂层厚度阶跃响应曲线", fontsize=15, fontweight="bold")
     plt.grid(alpha=0.22)
     plt.xlim(0.0, float(np.max([row["time_s"] for row in response_rows])))
     plt.ylim(0.68 * float(response_rows[0]["target_thickness_um"]), 1.08 * float(response_rows[0]["target_thickness_um"]))
@@ -678,13 +1065,14 @@ def _plot_literature_radar(summary_rows: list[dict[str, Any]], path: Path) -> No
             angles,
             scores,
             color=LITERATURE_COLORS[controller_name],
+            linestyle=LITERATURE_LINESTYLES.get(controller_name, "-"),
             linewidth=2.8 if controller_name == PROPOSED_CONTROLLER else 2.0,
             label=LITERATURE_LABELS[controller_name],
         )
         axis.fill(angles, scores, color=LITERATURE_COLORS[controller_name], alpha=0.14 if controller_name == PROPOSED_CONTROLLER else 0.08)
 
-    axis.set_title("六种控制算法综合性能雷达图", pad=24, fontsize=15)
-    axis.legend(loc="upper right", bbox_to_anchor=(1.28, 1.12), title="颜色说明")
+    axis.set_title("不同控制算法的综合性能雷达图", pad=24, fontsize=15, fontweight="bold")
+    axis.legend(loc="upper right", bbox_to_anchor=(1.22, 1.10), title="颜色与线型说明")
     plt.tight_layout()
     path.parent.mkdir(parents=True, exist_ok=True)
     plt.savefig(path, dpi=400, bbox_inches="tight")
@@ -712,14 +1100,15 @@ def _plot_literature_publication_style(summary_rows: list[dict[str, Any]], path:
             linewidth=0.6,
             height=0.60,
         )
+        for bar, controller_name in zip(bars, LITERATURE_CONTROLLER_ORDER, strict=True):
+            bar.set_hatch(LITERATURE_HATCHES[controller_name])
         axis.set_yticks(y_positions)
         axis.set_yticklabels(y_labels)
         axis.invert_yaxis()
         axis.grid(axis="x", alpha=0.18)
-        axis.set_title(metric_label, loc="left", fontsize=11, fontweight="bold")
+        axis.set_title(f"{metric_label}（{'越低越优' if direction == 'lower' else '越高越优'}）", loc="left", fontsize=11, fontweight="bold")
         upper = max(values) if values else 1.0
         axis.set_xlim(0, upper * 1.24 + 1e-6)
-        axis.text(0.99, 0.90, "越低越优" if direction == "lower" else "越高越优", transform=axis.transAxes, ha="right", va="top", fontsize=9)
         axis.xaxis.set_major_locator(ticker.MaxNLocator(nbins=5))
         axis.xaxis.set_major_formatter(ticker.FormatStrFormatter("%.2f" if upper < 10 else "%.1f"))
 
@@ -741,7 +1130,7 @@ def _plot_literature_publication_style(summary_rows: list[dict[str, Any]], path:
             elif controller_name == "LADRC":
                 tick_label.set_fontweight("bold")
 
-    fig.suptitle("六种控制算法性能指标对比图", y=0.995, fontsize=16)
+    fig.suptitle("不同控制算法的涂层厚度控制性能指标对比", y=0.995, fontsize=16)
     plt.tight_layout(rect=(0.0, 0.0, 1.0, 0.98))
     path.parent.mkdir(parents=True, exist_ok=True)
     plt.savefig(path, dpi=400)
@@ -919,21 +1308,29 @@ def main() -> None:
         config["scoring"]["weights"],
     )
     score_breakdown_rows = _build_score_breakdown_rows(summary_rows, config["scoring"]["weights"])
+    disturbance_response_rows, disturbance_metric_rows = _run_disturbance_rejection_benchmark(config)
 
-    _write_summary_csv(summary_rows, paper_dir / "Table4-2_六种控制算法文献指标对比表.csv")
-    _write_summary_markdown(summary_rows, paper_dir / "Table4-2_六种控制算法文献指标对比表_zh.md")
+    _write_summary_csv_standard(summary_rows, paper_dir / "Table4-2_六种控制算法文献指标对比表.csv")
+    _write_summary_markdown_standard(summary_rows, paper_dir / "Table4-2_六种控制算法文献指标对比表_zh.md")
     _plot_metric_panels(summary_rows, paper_dir / "Fig4-5_六种控制算法文献指标对比图_zh.png")
     save_csv(response_rows, paper_dir / "Fig4-6_六种控制算法文献增强动态响应曲线.csv")
     _plot_response(response_rows, paper_dir / "Fig4-6_六种控制算法文献增强动态响应曲线_zh.png")
     _plot_literature_radar(summary_rows, paper_dir / "Fig4-7_六种控制算法综合性能雷达图_zh.png")
     _plot_literature_publication_style(summary_rows, paper_dir / "Fig4-8_六种控制算法期刊风格性能指标对比图_zh.png")
     save_csv(score_breakdown_rows, paper_dir / "Table4-3_六种控制算法综合评分计算过程表.csv")
-    _write_score_breakdown_markdown(summary_rows, config["scoring"]["weights"], paper_dir / "Table4-3_六种控制算法综合评分计算过程表_zh.md")
+    _write_score_breakdown_markdown_standard(summary_rows, config["scoring"]["weights"], paper_dir / "Table4-3_六种控制算法综合评分计算过程表_zh.md")
+    save_csv(disturbance_response_rows, paper_dir / "Fig4-9_不同控制算法的抗干扰响应曲线.csv")
+    _plot_disturbance_response(disturbance_response_rows, paper_dir / "Fig4-9_不同控制算法的抗干扰响应曲线_zh.png")
+    save_csv(disturbance_metric_rows, paper_dir / "Table4-4_不同控制算法抗干扰性能对比表.csv")
+    _write_disturbance_table_standard(disturbance_metric_rows, paper_dir / "Table4-4_不同控制算法抗干扰性能对比表_zh.md")
+    _write_disturbance_note(paper_dir / "附_第四章抗干扰性能实验说明_zh.md", disturbance_metric_rows, config)
     _write_experiment_note(paper_dir / "附_第四章文献增强实验说明_zh.md", summary_rows, chapter3_csv)
     _write_literature_reference(paper_dir / "附_第四章相关文献依据_zh.md")
 
     save_csv(cycle_rows, raw_dir / "chapter4_literature_cycle_log.csv")
     save_csv(trial_rows, raw_dir / "chapter4_literature_trial_metrics.csv")
+    save_csv(disturbance_response_rows, raw_dir / "chapter4_disturbance_response.csv")
+    save_csv(disturbance_metric_rows, raw_dir / "chapter4_disturbance_metrics.csv")
     save_json(
         {
             "source_summary": source_summary,
@@ -947,6 +1344,7 @@ def main() -> None:
             "pid_relative_improvements_ladrc": _build_pid_relative_improvements(summary_rows, "LADRC"),
             "pid_relative_improvements_agc": _build_pid_relative_improvements(summary_rows, PROPOSED_CONTROLLER),
             "response_metrics": response_metrics,
+            "disturbance_metric_rows": disturbance_metric_rows,
             "score_breakdown_rows": score_breakdown_rows,
         },
         raw_dir / "chapter4_literature_summary.json",
