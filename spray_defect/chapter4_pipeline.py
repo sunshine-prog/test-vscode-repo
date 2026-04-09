@@ -25,7 +25,7 @@ CONTROLLER_LABELS = {
     "Fuzzy-PID": "Fuzzy-PID",
     "MA-GC": "MA-GC",
     "RL-GC": "RL-GC",
-    "A-GC": "A-GC（本文算法）",
+    "A-GC": "A-GC(本文算法)",
 }
 
 CONTROLLER_COLORS = {
@@ -1041,6 +1041,108 @@ def _plot_dynamic_response(response_rows: list[dict[str, Any]], path: Path) -> N
     plt.close()
 
 
+def _plot_publication_style_comparison(summary_rows: list[dict[str, Any]], path: Path) -> None:
+    _configure_plot_style()
+    baseline_row = _find_controller_row(summary_rows, BASELINE_CONTROLLER)
+    best_row = _find_best_row(summary_rows)
+    improvements = _build_baseline_improvements(summary_rows)
+
+    figure, axes = plt.subplots(len(METRIC_SPECS), 1, figsize=(13.2, 10.6), sharey=True)
+    y_positions = np.arange(len(CONTROLLER_ORDER))
+    labels = [CONTROLLER_LABELS[name] for name in CONTROLLER_ORDER]
+
+    for axis, (metric_key, metric_label, direction) in zip(axes, METRIC_SPECS, strict=True):
+        values = []
+        for controller_name in CONTROLLER_ORDER:
+            row = _find_controller_row(summary_rows, controller_name)
+            values.append(float(row[metric_key]) if row is not None else 0.0)
+
+        colors = [CONTROLLER_COLORS[name] for name in CONTROLLER_ORDER]
+        bars = axis.barh(y_positions, values, color=colors, edgecolor="#2B2B2B", linewidth=0.6, height=0.62)
+        axis.set_title(metric_label, loc="left", fontsize=11, fontweight="bold")
+        axis.set_yticks(y_positions)
+        axis.set_yticklabels(labels)
+        axis.grid(axis="x", alpha=0.18)
+        axis.invert_yaxis()
+
+        x_max = max(values) if values else 1.0
+        axis.set_xlim(0.0, x_max * 1.25 + 1e-6)
+        note = "越高越优" if direction == "higher" else "越低越优"
+        axis.text(0.99, 0.92, note, transform=axis.transAxes, ha="right", va="top", fontsize=9, color="#4A4A4A")
+
+        for bar, controller_name, value in zip(bars, CONTROLLER_ORDER, values, strict=True):
+            label = f"{value:.2f}" if metric_key in {"uniformity_percent", "overshoot_percent"} else f"{value:.4f}"
+            axis.text(
+                bar.get_width() + x_max * 0.02,
+                bar.get_y() + bar.get_height() / 2.0,
+                label,
+                va="center",
+                ha="left",
+                fontsize=9,
+                fontweight="bold" if controller_name == PROPOSED_CONTROLLER else "normal",
+                color="#1C1C1C",
+            )
+
+        for tick_label, controller_name in zip(axis.get_yticklabels(), CONTROLLER_ORDER, strict=True):
+            if controller_name == PROPOSED_CONTROLLER:
+                tick_label.set_fontweight("bold")
+                tick_label.set_color(CONTROLLER_COLORS[controller_name])
+            elif controller_name == BASELINE_CONTROLLER:
+                tick_label.set_fontweight("bold")
+
+        if baseline_row is not None and metric_key in improvements:
+            delta = improvements[metric_key]
+            delta_prefix = "+" if delta >= 0 else ""
+            axis.text(
+                0.99,
+                0.12,
+                f"A-GC 相对 PID：{delta_prefix}{delta:.2f}%",
+                transform=axis.transAxes,
+                ha="right",
+                va="bottom",
+                fontsize=9,
+                color="#274C77" if delta >= 0 else "#8B3A3A",
+                bbox={
+                    "boxstyle": "round,pad=0.22",
+                    "facecolor": "#F7F7F7",
+                    "edgecolor": "#D6D6D6",
+                    "alpha": 0.95,
+                },
+            )
+
+    figure.suptitle("五种控制算法期刊风格性能指标对比图", fontsize=16, y=0.995)
+    if best_row is not None:
+        figure.text(
+            0.985,
+            0.985,
+            f"最佳方法：{best_row['controller_label']}\n综合得分：{best_row['composite_score']:.2f}",
+            ha="right",
+            va="top",
+            fontsize=10,
+            color="#274C77",
+            bbox={
+                "boxstyle": "round,pad=0.35",
+                "facecolor": "#F3F7FB",
+                "edgecolor": "#C7D7E8",
+                "alpha": 0.98,
+            },
+        )
+
+    figure.text(
+        0.985,
+        0.05,
+        "版式思路：基线优先排序 + 原始指标值 + 相对PID改进幅度",
+        ha="right",
+        va="bottom",
+        fontsize=9,
+        color="#555555",
+    )
+    plt.tight_layout(rect=(0.0, 0.04, 1.0, 0.97))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(path, dpi=400)
+    plt.close()
+
+
 def _write_experiment_note(
     path: Path,
     *,
@@ -1126,6 +1228,29 @@ def _write_experiment_note_v2(
     path.write_text("\n".join(lines), encoding="utf-8")
 
 
+def _write_plot_style_reference(path: Path) -> None:
+    lines = [
+        "# 第四章图表版式参考",
+        "",
+        "本次新增的“期刊风格性能指标对比图”参考了两类常见论文表达方式，并结合你的第四章结果重新设计：",
+        "",
+        "1. Electronics 2023：将不同控制策略的动态响应曲线与性能改进结论配套展示，强调“方法对比 + 改进幅度”表达。",
+        "   链接：https://www.mdpi.com/2079-9292/12/18/3925",
+        "2. Applied Sciences 2024：使用紧凑的控制性能指标表，对稳态误差、超调量、调节时间等指标进行并列表达。",
+        "   链接：https://www.mdpi.com/2076-3417/14/22/10688",
+        "",
+        "据此，本图采用了以下版式原则：",
+        "",
+        "- 固定基线顺序：PID 放在首位，保证“传统基线 -> 改进方法 -> 本文方法”的阅读逻辑。",
+        "- 原始值直接标注：避免只画归一化分数导致论文审稿时不便核验。",
+        "- 相对 PID 改进幅度单独标注：增强结论说服力，便于在正文中直接引用。",
+        "- 本文算法高亮：A-GC（本文算法）统一用深蓝色并加粗显示。",
+        "",
+        "最终新增图名：`Fig4-4_期刊风格五种控制算法性能指标对比图_zh.png`。",
+    ]
+    path.write_text("\n".join(lines), encoding="utf-8")
+
+
 def _prepare_phase_specs(config: dict[str, Any]) -> list[PhaseSpec]:
     return [
         PhaseSpec(
@@ -1199,12 +1324,14 @@ def main() -> None:
     _plot_radar(summary_rows, paper_dir / "Fig4-2_五种控制算法综合性能雷达图_zh.png")
     save_csv(response_rows, paper_dir / "Fig4-3_五种控制算法涂层厚度动态响应曲线.csv")
     _plot_dynamic_response(response_rows, paper_dir / "Fig4-3_五种控制算法涂层厚度动态响应曲线_zh.png")
+    _plot_publication_style_comparison(summary_rows, paper_dir / "Fig4-4_期刊风格五种控制算法性能指标对比图_zh.png")
     _write_experiment_note_v2(
         paper_dir / "附_第四章控制实验说明_zh.md",
         source_csv=chapter3_csv,
         summary_rows=summary_rows,
         phase_specs=phase_specs,
     )
+    _write_plot_style_reference(paper_dir / "附_第四章图表版式参考_zh.md")
 
     save_csv(cycle_rows, raw_dir / "chapter4_control_cycle_log.csv")
     save_csv(trial_rows, raw_dir / "chapter4_control_trial_metrics.csv")
