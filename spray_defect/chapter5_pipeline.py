@@ -13,6 +13,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from matplotlib import rcParams
+from matplotlib.ticker import AutoMinorLocator
 
 from .anomaly import aggregate_patch_rows, compute_batch_scores, extract_region_features
 from .config import choose_device, ensure_dir, load_yaml, save_csv, save_json
@@ -507,21 +508,78 @@ def _plot_latency_chart(rows: list[dict[str, Any]], path: Path) -> None:
     inference = [float(row["平均模型推理时延 (ms)"]) for row in rows]
     interface = [float(row["平均接口封装时延 (ms)"]) for row in rows]
     control = [float(row["平均控制决策时延 (ms)"]) for row in rows]
+    total = [float(row["平均全流程时延 (ms)"]) for row in rows]
+    max_total = [float(row["最大全流程时延 (ms)"]) for row in rows]
 
     x = np.arange(len(labels))
     width = 0.22
-    fig, ax = plt.subplots(figsize=(10, 5.5), dpi=200)
-    ax.bar(x - width, inference, width=width, label="模型推理", color="#274C77")
-    ax.bar(x, interface, width=width, label="接口封装", color="#6096BA")
-    ax.bar(x + width, control, width=width, label="控制决策", color="#A3CEF1")
+    fig, ax = plt.subplots(figsize=(11, 7.2), dpi=200)
+    bars_inference = ax.bar(x - width, inference, width=width, label="模型推理", color="#274C77")
+    bars_interface = ax.bar(x, interface, width=width, label="接口封装", color="#6096BA")
+    bars_control = ax.bar(x + width, control, width=width, label="控制决策", color="#A3CEF1")
+
+    ymax = max(inference + interface + control + total + max_total) if rows else 1.0
+    ax.set_ylim(0.0, ymax * 1.18)
+
+    for bars in (bars_inference, bars_interface, bars_control):
+        for bar in bars:
+            height = float(bar.get_height())
+            ax.text(
+                bar.get_x() + bar.get_width() / 2.0,
+                height + ymax * 0.02,
+                f"{height:.2f}",
+                ha="center",
+                va="bottom",
+                fontsize=9,
+                color="#1F2933",
+            )
 
     ax.set_xticks(x)
     ax.set_xticklabels(labels)
     ax.set_ylabel("平均时延 (ms)")
-    ax.set_title("第五章系统实时性时延分解")
+    ax.set_title("系统实时性时延分解")
     ax.legend(frameon=False)
-    ax.grid(axis="y", linestyle="--", alpha=0.25)
-    fig.tight_layout()
+
+    ax.set_axisbelow(True)
+    ax.yaxis.set_minor_locator(AutoMinorLocator(2))
+    ax.grid(axis="y", which="major", linestyle="--", linewidth=0.85, alpha=0.35, color="#6B7280")
+    ax.grid(axis="y", which="minor", linestyle=":", linewidth=0.65, alpha=0.25, color="#9CA3AF")
+    ax.grid(axis="x", which="major", linestyle="-.", linewidth=0.65, alpha=0.18, color="#274C77")
+
+    table_headers = ["设备", "模型推理", "接口封装", "控制决策", "平均全流程", "最大全流程"]
+    table_rows = [
+        [
+            labels[index],
+            f"{inference[index]:.2f}",
+            f"{interface[index]:.2f}",
+            f"{control[index]:.2f}",
+            f"{total[index]:.2f}",
+            f"{max_total[index]:.2f}",
+        ]
+        for index in range(len(labels))
+    ]
+    table_height = 0.16 + 0.06 * max(len(table_rows), 1)
+    table = ax.table(
+        cellText=table_rows,
+        colLabels=table_headers,
+        cellLoc="center",
+        colLoc="center",
+        bbox=[0.0, -0.42, 1.0, table_height],
+    )
+    table.auto_set_font_size(False)
+    table.set_fontsize(9)
+    for (row_index, _), cell in table.get_celld().items():
+        cell.set_edgecolor("#C7D3DD")
+        cell.set_linewidth(0.8)
+        if row_index == 0:
+            cell.set_facecolor("#EAF4FB")
+            cell.set_text_props(weight="bold", color="#1F2933")
+        elif row_index % 2 == 1:
+            cell.set_facecolor("#F8FBFD")
+        else:
+            cell.set_facecolor("#FFFFFF")
+
+    fig.subplots_adjust(bottom=0.34)
     path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(path, bbox_inches="tight")
     plt.close(fig)
