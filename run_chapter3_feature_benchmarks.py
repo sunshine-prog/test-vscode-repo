@@ -32,7 +32,10 @@ class ResNet18FeatureExtractor(torch.nn.Module):
             checkpoint_path = Path.home() / ".cache" / "torch" / "hub" / "checkpoints" / "wide_resnet50_2-95faca4d.pth"
             if not checkpoint_path.exists():
                 raise FileNotFoundError(f"Missing local wide_resnet50_2 weights: {checkpoint_path}")
-            state_dict = torch.load(checkpoint_path, map_location="cpu")
+            try:
+                state_dict = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+            except TypeError:
+                state_dict = torch.load(checkpoint_path, map_location="cpu")
             backbone.load_state_dict(state_dict)
         else:
             raise ValueError(f"Unsupported backbone_name: {backbone_name!r}")

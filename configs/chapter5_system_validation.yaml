@@ -152,3 +152,31 @@ realtime:
     max_multiplier: 1.35
     cpu_avg_ms: 460.0
     cpu_max_ms: 580.0
+
+model_comparison:
+  enabled: true
+  device: auto
+  methods:
+    - key: AE
+      label: AE
+      kind: reconstruction
+      metrics_candidates:
+        - D:/pythonProject2/outputs/baseline_p768_b32_lr5e4_cosine/metrics/test_metrics.json
+        - D:/pythonProject2/outputs/00_论文总目录_最终版/03_第三章论文输出/03_对比方法原始指标/ae/metrics/test_metrics.json
+      checkpoint_candidates:
+        - D:/pythonProject2/outputs/baseline_p768_b32_lr5e4_cosine/checkpoints/best_model.pt
+    - key: PaDiM
+      label: PaDiM
+      kind: padim
+      metrics_candidates:
+        - D:/pythonProject2/outputs/chapter3_feature_benchmarks_final/padim/metrics/test_metrics.json
+        - D:/pythonProject2/outputs/00_论文总目录_最终版/03_第三章论文输出/03_对比方法原始指标/padim/metrics/test_metrics.json
+    - key: LUAE
+      label: LUAE（轻量U-Net）
+      kind: reconstruction
+      metrics_candidates:
+        - D:/pythonProject2/outputs/chapter3_repro/metrics/test_metrics.json
+        - D:/pythonProject2/outputs/00_论文总目录_最终版/01_用户训练结果/第三章_LUAE/chapter3_repro/metrics/test_metrics.json
+      checkpoint_candidates:
+        - D:/pythonProject2/outputs/chapter3_repro/checkpoints/best_model.pt
+        - D:/pythonProject2/outputs/00_论文总目录_最终版/01_用户训练结果/第三章_LUAE/chapter3_repro/checkpoints/best_model.pt

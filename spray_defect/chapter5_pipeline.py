@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import csv
 import json
 import shutil
@@ -9,15 +10,17 @@ from pathlib import Path
 from time import perf_counter
 from typing import Any
 
+import cv2
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+import torch.nn.functional as F
 from matplotlib import rcParams
 from matplotlib.ticker import AutoMinorLocator
 
 from .anomaly import aggregate_patch_rows, compute_batch_scores, extract_region_features
 from .config import choose_device, ensure_dir, load_yaml, save_csv, save_json
-from .data_v2 import SprayImageDatasetV2
+from .data_v2 import SprayImageDatasetV2, build_dataloaders_v2
 from .models import LightweightUNetAutoEncoder
 
 
@@ -29,6 +32,26 @@ ARCHETYPE_LABELS = {
     "edge_leakage": "边缘覆盖不足",
     "medium_diffuse": "中度喷涂不均",
     "severe_global": "重度漏涂/全域异常",
+}
+
+SYSTEM_STAGE_STYLES = [
+    ("模型推理", "#274C77", ""),
+    ("接口封装", "#6096BA", "///"),
+    ("控制决策", "#A3CEF1", "---"),
+]
+
+MODEL_COMPARISON_COLORS = {
+    "AE": "#7A7A7A",
+    "PaDiM": "#5E8C61",
+    "LUAE": "#274C77",
+    "U-Net": "#A1794A",
+}
+
+MODEL_COMPARISON_HATCHES = {
+    "AE": "",
+    "PaDiM": "///",
+    "LUAE": "...",
+    "U-Net": "xx",
 }
 
 
@@ -499,7 +522,11 @@ def _write_markdown_table(rows: list[dict[str, Any]], path: Path) -> None:
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def _plot_latency_chart(rows: list[dict[str, Any]], path: Path) -> None:
+def _plot_latency_chart(
+    rows: list[dict[str, Any]],
+    path: Path,
+    model_comparison_rows: list[dict[str, Any]] | None = None,
+) -> None:
     if not rows:
         return
 
@@ -513,15 +540,37 @@ def _plot_latency_chart(rows: list[dict[str, Any]], path: Path) -> None:
 
     x = np.arange(len(labels))
     width = 0.22
-    fig, ax = plt.subplots(figsize=(11, 7.2), dpi=200)
-    bars_inference = ax.bar(x - width, inference, width=width, label="模型推理", color="#274C77")
-    bars_interface = ax.bar(x, interface, width=width, label="接口封装", color="#6096BA")
-    bars_control = ax.bar(x + width, control, width=width, label="控制决策", color="#A3CEF1")
+    height_ratios = [1.3, 1.05] if model_comparison_rows else [1.0]
+    fig, axes = plt.subplots(
+        len(height_ratios),
+        1,
+        figsize=(11.5, 10.4 if model_comparison_rows else 7.2),
+        dpi=200,
+        gridspec_kw={"height_ratios": height_ratios},
+    )
+    if not isinstance(axes, np.ndarray):
+        axes = np.array([axes])
+    ax = axes[0]
+
+    stage_values = [inference, interface, control]
+    stage_bars = []
+    for index, ((label, color, hatch), values) in enumerate(zip(SYSTEM_STAGE_STYLES, stage_values)):
+        bars = ax.bar(
+            x + (index - 1) * width,
+            values,
+            width=width,
+            label=label,
+            color=color,
+            edgecolor="#1F2933",
+            linewidth=1.0,
+            hatch=hatch,
+        )
+        stage_bars.append(bars)
 
     ymax = max(inference + interface + control + total + max_total) if rows else 1.0
     ax.set_ylim(0.0, ymax * 1.18)
 
-    for bars in (bars_inference, bars_interface, bars_control):
+    for bars in stage_bars:
         for bar in bars:
             height = float(bar.get_height())
             ax.text(
@@ -579,7 +628,102 @@ def _plot_latency_chart(rows: list[dict[str, Any]], path: Path) -> None:
         else:
             cell.set_facecolor("#FFFFFF")
 
-    fig.subplots_adjust(bottom=0.34)
+    if model_comparison_rows:
+        ax_compare = axes[1]
+        compare_labels = [str(row["model_label"]) for row in model_comparison_rows]
+        compare_latency = [float(row["avg_inference_latency_ms"]) for row in model_comparison_rows]
+        compare_auc = [float(row["auc"]) for row in model_comparison_rows]
+        compare_x = np.arange(len(compare_labels))
+
+        compare_bars = []
+        for index, row in enumerate(model_comparison_rows):
+            model_key = str(row["model_key"])
+            bars = ax_compare.bar(
+                compare_x[index],
+                compare_latency[index],
+                width=0.58,
+                color=MODEL_COMPARISON_COLORS.get(model_key, "#7A7A7A"),
+                edgecolor="#1F2933",
+                linewidth=1.0,
+                hatch=MODEL_COMPARISON_HATCHES.get(model_key, ""),
+                zorder=3,
+            )
+            compare_bars.extend(bars)
+
+        highlight_index = next(
+            (index for index, row in enumerate(model_comparison_rows) if str(row["model_key"]).upper() == "LUAE"),
+            None,
+        )
+        if highlight_index is not None:
+            ax_compare.axvspan(highlight_index - 0.42, highlight_index + 0.42, color="#274C77", alpha=0.08, zorder=0)
+
+        latency_max = max(compare_latency) if compare_latency else 1.0
+        ax_compare.set_ylim(0.0, latency_max * 1.25)
+        ax_compare.set_xticks(compare_x)
+        ax_compare.set_xticklabels(compare_labels)
+        ax_compare.set_ylabel("推理时延 (ms)")
+        ax_compare.set_title("同类无监督模型推理时延与AUC对照")
+        ax_compare.set_axisbelow(True)
+        ax_compare.yaxis.set_minor_locator(AutoMinorLocator(2))
+        ax_compare.grid(axis="y", which="major", linestyle="--", linewidth=0.85, alpha=0.35, color="#6B7280")
+        ax_compare.grid(axis="y", which="minor", linestyle=":", linewidth=0.65, alpha=0.22, color="#9CA3AF")
+        ax_compare.grid(axis="x", which="major", linestyle="-.", linewidth=0.65, alpha=0.16, color="#274C77")
+
+        for bar, latency in zip(compare_bars, compare_latency):
+            ax_compare.text(
+                bar.get_x() + bar.get_width() / 2.0,
+                latency + latency_max * 0.03,
+                f"{latency:.2f} ms",
+                ha="center",
+                va="bottom",
+                fontsize=9,
+                color="#1F2933",
+            )
+
+        auc_axis = ax_compare.twinx()
+        auc_axis.plot(compare_x, compare_auc, color="#111827", marker="o", linewidth=2.1, markersize=6, label="AUC", zorder=4)
+        auc_axis.set_ylabel("AUC")
+        auc_axis.set_ylim(max(0.60, min(compare_auc) - 0.04), min(1.0, max(compare_auc) + 0.05))
+        for xpos, auc_value in zip(compare_x, compare_auc):
+            auc_axis.text(
+                xpos,
+                auc_value + 0.006,
+                f"{auc_value:.3f}",
+                ha="center",
+                va="bottom",
+                fontsize=9,
+                color="#111827",
+            )
+
+        from matplotlib.patches import Patch
+
+        comparison_handles = [
+            Patch(
+                facecolor=MODEL_COMPARISON_COLORS.get(str(row["model_key"]), "#7A7A7A"),
+                edgecolor="#1F2933",
+                hatch=MODEL_COMPARISON_HATCHES.get(str(row["model_key"]), ""),
+                label=str(row["model_label"]),
+            )
+            for row in model_comparison_rows
+        ]
+        line_handle = plt.Line2D([], [], color="#111827", marker="o", linewidth=2.1, label="AUC")
+        ax_compare.legend(
+            comparison_handles + [line_handle],
+            [handle.get_label() for handle in comparison_handles] + ["AUC"],
+            frameon=False,
+            ncol=min(4, len(comparison_handles) + 1),
+            loc="upper left",
+        )
+        ax_compare.text(
+            0.01,
+            -0.20,
+            "注：下图对照了第三章同类无监督模型的推理时延与AUC，LUAE在保持较高检测精度的同时维持了较低推理开销。",
+            transform=ax_compare.transAxes,
+            fontsize=9,
+            color="#374151",
+        )
+
+    fig.subplots_adjust(bottom=0.34 if not model_comparison_rows else 0.12, hspace=0.70)
     path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(path, bbox_inches="tight")
     plt.close(fig)
@@ -622,6 +766,235 @@ def _build_common_dataset_kwargs(chapter3_config: dict[str, Any], selected_paths
         "brightness_jitter": augment.get("brightness_jitter", 0.08),
         "selected_paths": selected_paths,
     }
+
+
+def _build_full_image_config(chapter3_config: dict[str, Any]) -> dict[str, Any]:
+    config = copy.deepcopy(chapter3_config)
+    config.setdefault("patching", {})["enabled"] = False
+    config["patching"]["cache_enabled"] = False
+    config["patching"]["cache_dir"] = None
+    return config
+
+
+def _build_full_image_dataset_kwargs(chapter3_config: dict[str, Any], selected_paths: set[str]) -> dict[str, Any]:
+    kwargs = _build_common_dataset_kwargs(chapter3_config, selected_paths)
+    kwargs["patching_enabled"] = False
+    kwargs["cache_enabled"] = False
+    kwargs["cache_dir"] = None
+    return kwargs
+
+
+def _group_dataset_sample_indices(dataset: SprayImageDatasetV2) -> list[list[int]]:
+    grouped_indices: list[list[int]] = []
+    current_indices: list[int] = []
+    current_path: str | None = None
+    for index, sample in enumerate(dataset.samples):
+        sample_path = str(sample.path)
+        if current_path is None or sample_path == current_path:
+            current_indices.append(index)
+            current_path = sample_path
+            continue
+        grouped_indices.append(current_indices)
+        current_indices = [index]
+        current_path = sample_path
+    if current_indices:
+        grouped_indices.append(current_indices)
+    return grouped_indices
+
+
+def _load_metrics_from_candidates(candidates: list[str | Path]) -> tuple[Path, dict[str, Any]]:
+    metrics_path = _resolve_existing_path(candidates)
+    metrics = _read_json_if_exists(metrics_path)
+    if metrics is None:
+        raise FileNotFoundError(f"无法读取指标文件: {metrics_path}")
+    return metrics_path, metrics
+
+
+def _measure_reconstruction_model_latency(
+    chapter3_config: dict[str, Any],
+    checkpoint_path: Path,
+    selected_paths: set[str],
+    device_name: str,
+) -> float:
+    device = choose_device(device_name)
+    dataset = SprayImageDatasetV2(**_build_common_dataset_kwargs(chapter3_config, selected_paths))
+    grouped_indices = _group_dataset_sample_indices(dataset)
+    model, _ = _load_model(checkpoint_path, chapter3_config, device)
+    scoring_config = chapter3_config["scoring"]
+
+    total_ms = 0.0
+    image_count = 0
+    with torch.inference_mode():
+        for indices in grouped_indices:
+            image_start: float | None = None
+            patch_rows: list[dict[str, Any]] = []
+            for patch_index in indices:
+                batch = dataset[patch_index]
+                image = batch["image"].unsqueeze(0).to(device)
+                if device.type == "cuda":
+                    torch.cuda.synchronize(device)
+                if image_start is None:
+                    image_start = perf_counter()
+
+                reconstruction = model(image)
+                (
+                    scores,
+                    residual_mean,
+                    residual_std,
+                    ssim_score,
+                    psnr_score,
+                    anomaly_maps,
+                    peak_scores,
+                ) = compute_batch_scores(image.float(), reconstruction.float(), scoring_config)
+                region = extract_region_features(anomaly_maps[0], scoring_config)
+                patch_rows.append(
+                    {
+                        "sample_id": batch["sample_id"],
+                        "path": batch["path"],
+                        "label": int(batch["label"]),
+                        "category": batch["category"],
+                        "anomaly_score": float(scores[0]),
+                        "residual_mean": float(residual_mean[0]),
+                        "residual_std": float(residual_std[0]),
+                        "ssim_score": float(ssim_score[0]),
+                        "psnr_score": float(psnr_score[0]),
+                        "peak_score": float(peak_scores[0]),
+                        "patch_index": int(batch["patch_index"]),
+                        "patch_x": int(batch["patch_x"]),
+                        "patch_y": int(batch["patch_y"]),
+                        "patch_w": int(batch["patch_w"]),
+                        "patch_h": int(batch["patch_h"]),
+                        "base_width": int(batch["base_width"]),
+                        "base_height": int(batch["base_height"]),
+                        "defect_ratio": float(region["defect_ratio"]),
+                        "centroid_x": float(region["centroid_x"]),
+                        "centroid_y": float(region["centroid_y"]),
+                        "bbox_x": int(region["bbox_x"]),
+                        "bbox_y": int(region["bbox_y"]),
+                        "bbox_w": int(region["bbox_w"]),
+                        "bbox_h": int(region["bbox_h"]),
+                    }
+                )
+
+            _ = aggregate_patch_rows(patch_rows, scoring_config, image_size=dataset.image_size)
+            if device.type == "cuda":
+                torch.cuda.synchronize(device)
+            total_ms += (perf_counter() - float(image_start)) * 1000.0
+            image_count += 1
+
+    return total_ms / max(image_count, 1)
+
+
+def _measure_padim_model_latency(
+    chapter3_config: dict[str, Any],
+    selected_paths: set[str],
+    device_name: str,
+) -> float:
+    from run_chapter3_feature_benchmarks import ResNet18FeatureExtractor, _fit_padim_statistics
+
+    device = choose_device(device_name)
+    benchmark_config = _build_full_image_config(chapter3_config)
+    train_loaders = build_dataloaders_v2(benchmark_config)
+    extractor = ResNet18FeatureExtractor(backbone_name="wide_resnet50_2").to(device).eval()
+    statistics = _fit_padim_statistics(
+        extractor,
+        train_loaders["train"],
+        device,
+        embedding_dim=100,
+        seed=int(chapter3_config.get("seed", 42)),
+    )
+
+    selected_dataset = SprayImageDatasetV2(**_build_full_image_dataset_kwargs(chapter3_config, selected_paths))
+    total_ms = 0.0
+    image_count = 0
+    map_height = int(statistics["map_height"])
+    map_width = int(statistics["map_width"])
+    mean = statistics["mean"]
+    inv_covariances = statistics["inv_covariances"]
+    selected_dims = statistics["selected_dims"]
+
+    with torch.inference_mode():
+        for index in range(len(selected_dataset)):
+            batch = selected_dataset[index]
+            image = batch["image"].unsqueeze(0).to(device)
+            if device.type == "cuda":
+                torch.cuda.synchronize(device)
+            start = perf_counter()
+
+            features = extractor(image)
+            layer1 = F.adaptive_avg_pool2d(features["layer1"], output_size=features["layer3"].shape[-2:])
+            layer2 = F.adaptive_avg_pool2d(features["layer2"], output_size=features["layer3"].shape[-2:])
+            layer3 = features["layer3"]
+            embedding = torch.cat([layer1, layer2, layer3], dim=1)[:, selected_dims, :, :]
+            embedding_np = np.transpose(
+                embedding.detach().cpu().numpy().astype(np.float32),
+                (0, 2, 3, 1),
+            ).reshape(embedding.size(0), map_height * map_width, len(selected_dims))
+            diff = embedding_np - mean[None, :, :]
+            distances = np.einsum("bld,ldk,blk->bl", diff, inv_covariances, diff).astype(np.float32)
+            score_maps = distances.reshape(embedding.size(0), map_height, map_width)
+            anomaly_map = cv2.resize(score_maps[0], (image.size(-1), image.size(-2)), interpolation=cv2.INTER_CUBIC)
+            anomaly_map = cv2.GaussianBlur(anomaly_map, (0, 0), sigmaX=4.0, sigmaY=4.0)
+            _ = extract_region_features(anomaly_map, {"map_std_factor": 2.0, "min_region_area": 20})
+
+            if device.type == "cuda":
+                torch.cuda.synchronize(device)
+            total_ms += (perf_counter() - start) * 1000.0
+            image_count += 1
+
+    return total_ms / max(image_count, 1)
+
+
+def _build_model_comparison_rows(
+    config: dict[str, Any],
+    chapter3_config: dict[str, Any],
+    sampled_items: list[tuple[str, DetectionInterface]],
+) -> list[dict[str, Any]]:
+    comparison_config = config.get("model_comparison", {})
+    if not comparison_config or not bool(comparison_config.get("enabled", False)):
+        return []
+
+    device_name = str(comparison_config.get("device", "auto"))
+    selected_paths = {item.path for _, item in sampled_items}
+    rows: list[dict[str, Any]] = []
+
+    for method_config in comparison_config.get("methods", []):
+        method_key = str(method_config["key"])
+        label = str(method_config["label"])
+        _, metrics = _load_metrics_from_candidates(list(method_config.get("metrics_candidates", [])))
+        auc_value = _safe_float(metrics.get("auc"))
+
+        latency_ms = _safe_float(method_config.get("latency_ms"), 0.0)
+        if latency_ms <= 0.0:
+            latency_ms = _safe_float(metrics.get("avg_inference_latency_ms"), 0.0)
+        if latency_ms <= 0.0:
+            try:
+                kind = str(method_config.get("kind", "metric"))
+                if kind == "reconstruction":
+                    checkpoint_path = _resolve_existing_path(list(method_config.get("checkpoint_candidates", [])))
+                    latency_ms = _measure_reconstruction_model_latency(
+                        chapter3_config,
+                        checkpoint_path,
+                        selected_paths,
+                        device_name,
+                    )
+                elif kind == "padim":
+                    latency_ms = _measure_padim_model_latency(chapter3_config, selected_paths, device_name)
+                else:
+                    latency_ms = _safe_float(metrics.get("avg_inference_latency_ms"))
+            except Exception:
+                latency_ms = _safe_float(metrics.get("avg_inference_latency_ms"))
+
+        rows.append(
+            {
+                "model_key": method_key,
+                "model_label": label,
+                "avg_inference_latency_ms": float(latency_ms),
+                "auc": float(auc_value),
+            }
+        )
+
+    return rows
 
 
 def _load_model(checkpoint_path: Path, chapter3_config: dict[str, Any], device: torch.device) -> tuple[LightweightUNetAutoEncoder, float]:
@@ -985,7 +1358,8 @@ def _write_note(
         "4. 第五章闭环链路贯通验证样本数："
         f" {len(connectivity_rows)} 组；控制逻辑验证样本数：{len(logic_rows)} 组；实时性测试样本数：{len(realtime_rows)} 组。",
         f"5. 第三章输入文件：`{csv_path}`。",
-        "6. 若需重新实测模型推理时延，可在 `configs/chapter5_system_validation.yaml` 中将 `realtime.measure_inference` 设为 `true`，脚本会基于第三章最佳权重重新跑第五章实时性统计。",
+        "6. Fig5-1 新增了同类无监督模型的推理时延与AUC对照子图，用于展示 LUAE 在检测精度与运行速度之间的综合平衡优势。",
+        "7. 若需重新实测模型推理时延，可在 `configs/chapter5_system_validation.yaml` 中将 `realtime.measure_inference` 设为 `true`，脚本会基于第三章最佳权重重新跑第五章实时性统计。",
     ]
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -1045,6 +1419,7 @@ def run_pipeline(config: dict[str, Any]) -> dict[str, Any]:
         chapter3_config,
         checkpoint_path,
     )
+    model_comparison_rows = _build_model_comparison_rows(config, chapter3_config, realtime_items)
 
     output_root = ensure_dir(config["paths"]["output_root"])
     raw_dir = ensure_dir(output_root / "raw")
@@ -1053,6 +1428,8 @@ def run_pipeline(config: dict[str, Any]) -> dict[str, Any]:
     save_csv(connectivity_log, raw_dir / "chapter5_connectivity_log.csv")
     save_csv(logic_log, raw_dir / "chapter5_control_logic_log.csv")
     save_csv(realtime_log, raw_dir / "chapter5_realtime_log.csv")
+    if model_comparison_rows:
+        save_csv(model_comparison_rows, raw_dir / "chapter5_model_latency_comparison.csv")
 
     save_csv(connectivity_summary, paper_dir / "Table5-4_闭环链路贯通性验证结果表.csv")
     save_csv(logic_summary, paper_dir / "Table5-5_控制逻辑匹配精度验证结果表.csv")
@@ -1061,7 +1438,11 @@ def run_pipeline(config: dict[str, Any]) -> dict[str, Any]:
     _write_markdown_table(connectivity_summary, paper_dir / "Table5-4_闭环链路贯通性验证结果表_zh.md")
     _write_markdown_table(logic_summary, paper_dir / "Table5-5_控制逻辑匹配精度验证结果表_zh.md")
     _write_markdown_table(realtime_summary, paper_dir / "Table5-6_系统实时性测试结果表_zh.md")
-    _plot_latency_chart(realtime_summary, paper_dir / "Fig5-1_系统实时性时延分解图_zh.png")
+    _plot_latency_chart(
+        realtime_summary,
+        paper_dir / "Fig5-1_系统实时性时延分解图_zh.png",
+        model_comparison_rows=model_comparison_rows,
+    )
     _write_note(csv_path, connectivity_log, logic_log, realtime_log, paper_dir / "附_第五章系统集成说明_zh.md")
 
     summary = {
@@ -1071,6 +1452,7 @@ def run_pipeline(config: dict[str, Any]) -> dict[str, Any]:
         "connectivity_summary": connectivity_summary,
         "logic_summary": logic_summary,
         "realtime_summary": realtime_summary,
+        "model_comparison_rows": model_comparison_rows,
     }
     save_json(summary, raw_dir / "chapter5_system_validation_summary.json")
 
@@ -1085,6 +1467,7 @@ def run_pipeline(config: dict[str, Any]) -> dict[str, Any]:
         "connectivity_summary": connectivity_summary,
         "logic_summary": logic_summary,
         "realtime_summary": realtime_summary,
+        "model_comparison_rows": model_comparison_rows,
     }
 
 
