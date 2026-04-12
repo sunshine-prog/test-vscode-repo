@@ -531,15 +531,6 @@ def _plot_latency_chart(
         return
 
     _configure_plot_style()
-    labels = [str(row["执行设备"]) for row in rows]
-    inference = [float(row["平均模型推理时延 (ms)"]) for row in rows]
-    interface = [float(row["平均接口封装时延 (ms)"]) for row in rows]
-    control = [float(row["平均控制决策时延 (ms)"]) for row in rows]
-    total = [float(row["平均全流程时延 (ms)"]) for row in rows]
-    max_total = [float(row["最大全流程时延 (ms)"]) for row in rows]
-
-    x = np.arange(len(labels))
-    width = 0.22
     height_ratios = [1.3, 1.05] if model_comparison_rows else [1.0]
     fig, axes = plt.subplots(
         len(height_ratios),
@@ -550,8 +541,27 @@ def _plot_latency_chart(
     )
     if not isinstance(axes, np.ndarray):
         axes = np.array([axes])
-    ax = axes[0]
+    _draw_realtime_breakdown(ax=axes[0], rows=rows)
 
+    if model_comparison_rows:
+        _draw_model_comparison(ax=axes[1], model_comparison_rows=model_comparison_rows)
+
+    fig.subplots_adjust(bottom=0.34 if not model_comparison_rows else 0.12, hspace=0.70)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(path, bbox_inches="tight")
+    plt.close(fig)
+
+
+def _draw_realtime_breakdown(ax: Any, rows: list[dict[str, Any]]) -> None:
+    labels = [str(row["执行设备"]) for row in rows]
+    inference = [float(row["平均模型推理时延 (ms)"]) for row in rows]
+    interface = [float(row["平均接口封装时延 (ms)"]) for row in rows]
+    control = [float(row["平均控制决策时延 (ms)"]) for row in rows]
+    total = [float(row["平均全流程时延 (ms)"]) for row in rows]
+    max_total = [float(row["最大全流程时延 (ms)"]) for row in rows]
+
+    x = np.arange(len(labels))
+    width = 0.22
     stage_values = [inference, interface, control]
     stage_bars = []
     for index, ((label, color, hatch), values) in enumerate(zip(SYSTEM_STAGE_STYLES, stage_values)):
@@ -628,102 +638,218 @@ def _plot_latency_chart(
         else:
             cell.set_facecolor("#FFFFFF")
 
-    if model_comparison_rows:
-        ax_compare = axes[1]
-        compare_labels = [str(row["model_label"]) for row in model_comparison_rows]
-        compare_latency = [float(row["avg_inference_latency_ms"]) for row in model_comparison_rows]
-        compare_auc = [float(row["auc"]) for row in model_comparison_rows]
-        compare_x = np.arange(len(compare_labels))
 
-        compare_bars = []
-        for index, row in enumerate(model_comparison_rows):
-            model_key = str(row["model_key"])
-            bars = ax_compare.bar(
-                compare_x[index],
-                compare_latency[index],
-                width=0.58,
-                color=MODEL_COMPARISON_COLORS.get(model_key, "#7A7A7A"),
+def _draw_model_comparison(ax: Any, model_comparison_rows: list[dict[str, Any]]) -> None:
+    compare_labels = [str(row["model_label"]) for row in model_comparison_rows]
+    compare_latency = [float(row["avg_inference_latency_ms"]) for row in model_comparison_rows]
+    compare_auc = [float(row["auc"]) for row in model_comparison_rows]
+    compare_x = np.arange(len(compare_labels))
+
+    compare_bars = []
+    for index, row in enumerate(model_comparison_rows):
+        model_key = str(row["model_key"])
+        bars = ax.bar(
+            compare_x[index],
+            compare_latency[index],
+            width=0.58,
+            color=MODEL_COMPARISON_COLORS.get(model_key, "#7A7A7A"),
+            edgecolor="#1F2933",
+            linewidth=1.0,
+            hatch=MODEL_COMPARISON_HATCHES.get(model_key, ""),
+            zorder=3,
+        )
+        compare_bars.extend(bars)
+
+    highlight_index = next(
+        (index for index, row in enumerate(model_comparison_rows) if str(row["model_key"]).upper() == "LUAE"),
+        None,
+    )
+    if highlight_index is not None:
+        ax.axvspan(highlight_index - 0.42, highlight_index + 0.42, color="#274C77", alpha=0.08, zorder=0)
+
+    latency_max = max(compare_latency) if compare_latency else 1.0
+    ax.set_ylim(0.0, latency_max * 1.25)
+    ax.set_xticks(compare_x)
+    ax.set_xticklabels(compare_labels)
+    ax.set_ylabel("推理时延 (ms)")
+    ax.set_title("同类无监督模型推理时延与AUC对照")
+    ax.set_axisbelow(True)
+    ax.yaxis.set_minor_locator(AutoMinorLocator(2))
+    ax.grid(axis="y", which="major", linestyle="--", linewidth=0.85, alpha=0.35, color="#6B7280")
+    ax.grid(axis="y", which="minor", linestyle=":", linewidth=0.65, alpha=0.22, color="#9CA3AF")
+    ax.grid(axis="x", which="major", linestyle="-.", linewidth=0.65, alpha=0.16, color="#274C77")
+
+    for bar, latency in zip(compare_bars, compare_latency):
+        ax.text(
+            bar.get_x() + bar.get_width() / 2.0,
+            latency + latency_max * 0.03,
+            f"{latency:.2f} ms",
+            ha="center",
+            va="bottom",
+            fontsize=9,
+            color="#1F2933",
+        )
+
+    auc_axis = ax.twinx()
+    auc_axis.plot(compare_x, compare_auc, color="#111827", marker="o", linewidth=2.1, markersize=6, label="AUC", zorder=4)
+    auc_axis.set_ylabel("AUC")
+    auc_axis.set_ylim(max(0.60, min(compare_auc) - 0.04), min(1.0, max(compare_auc) + 0.05))
+    for xpos, auc_value in zip(compare_x, compare_auc):
+        auc_axis.text(
+            xpos,
+            auc_value + 0.006,
+            f"{auc_value:.3f}",
+            ha="center",
+            va="bottom",
+            fontsize=9,
+            color="#111827",
+        )
+
+    from matplotlib.patches import Patch
+
+    comparison_handles = [
+        Patch(
+            facecolor=MODEL_COMPARISON_COLORS.get(str(row["model_key"]), "#7A7A7A"),
+            edgecolor="#1F2933",
+            hatch=MODEL_COMPARISON_HATCHES.get(str(row["model_key"]), ""),
+            label=str(row["model_label"]),
+        )
+        for row in model_comparison_rows
+    ]
+    line_handle = plt.Line2D([], [], color="#111827", marker="o", linewidth=2.1, label="AUC")
+    ax.legend(
+        comparison_handles + [line_handle],
+        [handle.get_label() for handle in comparison_handles] + ["AUC"],
+        frameon=False,
+        ncol=min(4, len(comparison_handles) + 1),
+        loc="upper left",
+    )
+
+
+def _plot_realtime_breakdown_chart(rows: list[dict[str, Any]], path: Path) -> None:
+    if not rows:
+        return
+
+    _configure_plot_style()
+    fig, axes = plt.subplots(1, len(rows), figsize=(11.8, 5.8), dpi=200)
+    if not isinstance(axes, np.ndarray):
+        axes = np.array([axes])
+
+    from matplotlib.patches import Patch
+
+    legend_handles = [
+        Patch(facecolor=color, edgecolor="#1F2933", hatch=hatch, label=label)
+        for label, color, hatch in SYSTEM_STAGE_STYLES
+    ]
+    legend_handles.append(
+        plt.Line2D([], [], color="#111827", marker="D", linestyle="--", linewidth=1.2, markersize=6, label="最大全流程")
+    )
+
+    for index, (ax, row) in enumerate(zip(axes, rows)):
+        device = str(row["执行设备"])
+        inference = float(row["平均模型推理时延 (ms)"])
+        interface = float(row["平均接口封装时延 (ms)"])
+        control = float(row["平均控制决策时延 (ms)"])
+        avg_total = float(row["平均全流程时延 (ms)"])
+        max_total = float(row["最大全流程时延 (ms)"])
+
+        x = np.array([0.0])
+        bottoms = np.zeros_like(x, dtype=float)
+        stage_values = [inference, interface, control]
+        for (label, color, hatch), value in zip(SYSTEM_STAGE_STYLES, stage_values):
+            ax.bar(
+                x,
+                [value],
+                width=0.52,
+                bottom=bottoms,
+                color=color,
                 edgecolor="#1F2933",
                 linewidth=1.0,
-                hatch=MODEL_COMPARISON_HATCHES.get(model_key, ""),
+                hatch=hatch,
                 zorder=3,
             )
-            compare_bars.extend(bars)
+            bottoms += value
 
-        highlight_index = next(
-            (index for index, row in enumerate(model_comparison_rows) if str(row["model_key"]).upper() == "LUAE"),
-            None,
+        ax.vlines(0.0, avg_total, max_total, colors="#111827", linestyles="--", linewidth=1.2, zorder=4)
+        ax.scatter([0.0], [max_total], color="#111827", marker="D", s=42, zorder=5)
+
+        axis_top = max(max_total, avg_total, 1.0) * 1.26
+        ax.set_ylim(0.0, axis_top)
+        ax.set_xlim(-0.72, 0.72)
+        ax.set_xticks([])
+        ax.set_title(device)
+        if index == 0:
+            ax.set_ylabel("时延 (ms)")
+
+        ax.set_axisbelow(True)
+        ax.yaxis.set_minor_locator(AutoMinorLocator(2))
+        ax.grid(axis="y", which="major", linestyle="--", linewidth=0.85, alpha=0.35, color="#6B7280")
+        ax.grid(axis="y", which="minor", linestyle=":", linewidth=0.65, alpha=0.22, color="#9CA3AF")
+
+        ax.text(
+            0.0,
+            avg_total + axis_top * 0.03,
+            f"平均 {avg_total:.2f} ms",
+            ha="center",
+            va="bottom",
+            fontsize=10,
+            color="#1F2933",
+            fontweight="bold",
         )
-        if highlight_index is not None:
-            ax_compare.axvspan(highlight_index - 0.42, highlight_index + 0.42, color="#274C77", alpha=0.08, zorder=0)
-
-        latency_max = max(compare_latency) if compare_latency else 1.0
-        ax_compare.set_ylim(0.0, latency_max * 1.25)
-        ax_compare.set_xticks(compare_x)
-        ax_compare.set_xticklabels(compare_labels)
-        ax_compare.set_ylabel("推理时延 (ms)")
-        ax_compare.set_title("同类无监督模型推理时延与AUC对照")
-        ax_compare.set_axisbelow(True)
-        ax_compare.yaxis.set_minor_locator(AutoMinorLocator(2))
-        ax_compare.grid(axis="y", which="major", linestyle="--", linewidth=0.85, alpha=0.35, color="#6B7280")
-        ax_compare.grid(axis="y", which="minor", linestyle=":", linewidth=0.65, alpha=0.22, color="#9CA3AF")
-        ax_compare.grid(axis="x", which="major", linestyle="-.", linewidth=0.65, alpha=0.16, color="#274C77")
-
-        for bar, latency in zip(compare_bars, compare_latency):
-            ax_compare.text(
-                bar.get_x() + bar.get_width() / 2.0,
-                latency + latency_max * 0.03,
-                f"{latency:.2f} ms",
-                ha="center",
-                va="bottom",
-                fontsize=9,
-                color="#1F2933",
-            )
-
-        auc_axis = ax_compare.twinx()
-        auc_axis.plot(compare_x, compare_auc, color="#111827", marker="o", linewidth=2.1, markersize=6, label="AUC", zorder=4)
-        auc_axis.set_ylabel("AUC")
-        auc_axis.set_ylim(max(0.60, min(compare_auc) - 0.04), min(1.0, max(compare_auc) + 0.05))
-        for xpos, auc_value in zip(compare_x, compare_auc):
-            auc_axis.text(
-                xpos,
-                auc_value + 0.006,
-                f"{auc_value:.3f}",
-                ha="center",
-                va="bottom",
-                fontsize=9,
-                color="#111827",
-            )
-
-        from matplotlib.patches import Patch
-
-        comparison_handles = [
-            Patch(
-                facecolor=MODEL_COMPARISON_COLORS.get(str(row["model_key"]), "#7A7A7A"),
-                edgecolor="#1F2933",
-                hatch=MODEL_COMPARISON_HATCHES.get(str(row["model_key"]), ""),
-                label=str(row["model_label"]),
-            )
-            for row in model_comparison_rows
-        ]
-        line_handle = plt.Line2D([], [], color="#111827", marker="o", linewidth=2.1, label="AUC")
-        ax_compare.legend(
-            comparison_handles + [line_handle],
-            [handle.get_label() for handle in comparison_handles] + ["AUC"],
-            frameon=False,
-            ncol=min(4, len(comparison_handles) + 1),
-            loc="upper left",
-        )
-        ax_compare.text(
-            0.01,
-            -0.20,
-            "注：下图对照了第三章同类无监督模型的推理时延与AUC，LUAE在保持较高检测精度的同时维持了较低推理开销。",
-            transform=ax_compare.transAxes,
+        ax.text(
+            0.0,
+            max_total + axis_top * 0.03,
+            f"峰值 {max_total:.2f} ms",
+            ha="center",
+            va="bottom",
             fontsize=9,
-            color="#374151",
+            color="#111827",
         )
 
-    fig.subplots_adjust(bottom=0.34 if not model_comparison_rows else 0.12, hspace=0.70)
+        detail_lines = [
+            f"模型推理  {inference:.2f} ms",
+            f"接口封装  {interface:.2f} ms",
+            f"控制决策  {control:.2f} ms",
+        ]
+        ax.text(
+            0.04,
+            0.96,
+            "\n".join(detail_lines),
+            transform=ax.transAxes,
+            ha="left",
+            va="top",
+            fontsize=9,
+            color="#1F2933",
+            bbox={
+                "boxstyle": "round,pad=0.35",
+                "facecolor": "#FFFFFF",
+                "edgecolor": "#C7D3DD",
+                "alpha": 0.96,
+            },
+        )
+
+    fig.suptitle("系统实时性时延分解", y=0.98, fontsize=15, fontweight="bold")
+    fig.legend(
+        handles=legend_handles,
+        loc="upper center",
+        bbox_to_anchor=(0.5, 0.92),
+        ncol=4,
+        frameon=False,
+    )
+    fig.subplots_adjust(top=0.78, bottom=0.12, left=0.08, right=0.97, wspace=0.24)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(path, bbox_inches="tight")
+    plt.close(fig)
+
+
+def _plot_model_comparison_chart(model_comparison_rows: list[dict[str, Any]], path: Path) -> None:
+    if not model_comparison_rows:
+        return
+
+    _configure_plot_style()
+    fig, ax = plt.subplots(1, 1, figsize=(11.5, 5.8), dpi=200)
+    _draw_model_comparison(ax=ax, model_comparison_rows=model_comparison_rows)
+    fig.subplots_adjust(bottom=0.16)
     path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(path, bbox_inches="tight")
     plt.close(fig)
@@ -1358,7 +1484,7 @@ def _write_note(
         "4. 第五章闭环链路贯通验证样本数："
         f" {len(connectivity_rows)} 组；控制逻辑验证样本数：{len(logic_rows)} 组；实时性测试样本数：{len(realtime_rows)} 组。",
         f"5. 第三章输入文件：`{csv_path}`。",
-        "6. Fig5-1 新增了同类无监督模型的推理时延与AUC对照子图，用于展示 LUAE 在检测精度与运行速度之间的综合平衡优势。",
+        "6. Fig5-1 保留系统实时性与同类无监督模型对照的拼接版，同时新增 Fig5-2 系统实时性时延分解图和 Fig5-3 同类无监督模型推理时延与AUC对照图，便于单独排版引用。",
         "7. 若需重新实测模型推理时延，可在 `configs/chapter5_system_validation.yaml` 中将 `realtime.measure_inference` 设为 `true`，脚本会基于第三章最佳权重重新跑第五章实时性统计。",
     ]
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -1442,6 +1568,11 @@ def run_pipeline(config: dict[str, Any]) -> dict[str, Any]:
         realtime_summary,
         paper_dir / "Fig5-1_系统实时性时延分解图_zh.png",
         model_comparison_rows=model_comparison_rows,
+    )
+    _plot_realtime_breakdown_chart(realtime_summary, paper_dir / "Fig5-2_系统实时性时延分解图_zh.png")
+    _plot_model_comparison_chart(
+        model_comparison_rows,
+        paper_dir / "Fig5-3_同类无监督模型推理时延与AUC对照图_zh.png",
     )
     _write_note(csv_path, connectivity_log, logic_log, realtime_log, paper_dir / "附_第五章系统集成说明_zh.md")
 

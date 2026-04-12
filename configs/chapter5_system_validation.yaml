@@ -172,7 +172,7 @@ model_comparison:
         - D:/pythonProject2/outputs/chapter3_feature_benchmarks_final/padim/metrics/test_metrics.json
         - D:/pythonProject2/outputs/00_论文总目录_最终版/03_第三章论文输出/03_对比方法原始指标/padim/metrics/test_metrics.json
     - key: LUAE
-      label: LUAE（轻量U-Net）
+      label: LUAE
       kind: reconstruction
       metrics_candidates:
         - D:/pythonProject2/outputs/chapter3_repro/metrics/test_metrics.json
